@@ -25,6 +25,10 @@
 上述第 2--5 项已在 `patches/20260815-le8e-baseline/` 生成候选 patch，并通过对应
 base commit 的 `git apply --check`。在 sol/维护者完成内容审查、补丁应用顺序和构建
 验证前，`TODO_*_PATCH_ARTIFACT` 仍保持未关闭。
+
+原生构建进一步确认：RACER `exploration_node` 已通过编译；Swarm-LIO 被
+`livox_ros_driver_mars` 缺少 Livox SDK 阻断。SDK 必须作为单独的可重建依赖封装，
+禁止构建过程中自动从 GitHub clone。
 6. `TODO_LKH_SOURCE_ORIGIN`：确认 LKH 3.0.6 tarball 的原始 URL、许可、原始归档 SHA256 和构建方式。当前仅确认本机可执行文件 SHA256。
 7. `TODO_APT_SNAPSHOT_OR_ARCHIVE`：记录 Ubuntu、ROS、OSRF apt source/key 和可长期取回的 snapshot；仅有 `package=version` 不保证未来仓库仍保留对应包。
 8. `TODO_PYTHON_WHEELHOUSE_OR_HASH_LOCK`：为 Python requirements 生成带 hash 的锁或受控 wheelhouse；当前只锁版本。
