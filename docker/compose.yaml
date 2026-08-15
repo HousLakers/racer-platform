@@ -1,0 +1,34 @@
+x-racer-common: &racer-common
+  image: "${RACER_PLATFORM_IMAGE:?set RACER_PLATFORM_IMAGE to an approved tag or digest}"
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile
+    args:
+      BASE_IMAGE: "${RACER_PLATFORM_BASE_IMAGE:?set RACER_PLATFORM_BASE_IMAGE to an approved name@sha256 digest}"
+  network_mode: host
+  environment:
+    DISPLAY: ${DISPLAY:-:0}
+    QT_X11_NO_MITSHM: "1"
+    ROS_HOME: /tmp/ros
+  volumes:
+    - ${RACER_WORKSPACE_DIR:-../workspace}:/workspace:rw
+    - ${RACER_RESULTS_DIR:-../results}:/results:rw
+    - /tmp/.X11-unix:/tmp/.X11-unix:rw
+  working_dir: /workspace
+  stdin_open: true
+  tty: true
+
+services:
+  racer-platform:
+    <<: *racer-common
+
+  racer-platform-gpu:
+    <<: *racer-common
+    profiles: [gpu]
+    gpus: all
+    environment:
+      DISPLAY: ${DISPLAY:-:0}
+      QT_X11_NO_MITSHM: "1"
+      ROS_HOME: /tmp/ros
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility,graphics

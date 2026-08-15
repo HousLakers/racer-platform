@@ -1,0 +1,110 @@
+schema: racer-platform/run-manifest/v1
+captured_at: TODO_ISO8601
+
+platform:
+  repository: TODO_URL
+  commit: TODO_FULL_SHA
+  lock_sha256: TODO_SHA256
+
+host:
+  os:
+    name: Ubuntu
+    version: TODO_VERSION
+    codename: TODO_CODENAME
+  architecture: TODO_ARCH
+  kernel: TODO_KERNEL
+
+ros:
+  distribution: noetic
+  install_prefix: /opt/ros/noetic
+  ros_base_apt: TODO_VERSION
+  ros_comm_apt: TODO_VERSION
+
+gazebo:
+  family: classic
+  version: TODO_VERSION
+  apt: TODO_VERSION
+
+px4:
+  repository: TODO_URL
+  commit: TODO_FULL_SHA
+  recursive_submodules_sha256: TODO_SHA256
+  patch_artifact: TODO_PATH_OR_URL
+  patch_sha256: TODO_SHA256
+  build_target: TODO_TARGET
+
+mavros:
+  source: TODO_APT_OR_GIT
+  version: TODO_VERSION
+  apt_or_commit: TODO_VERSION_OR_SHA
+  geographiclib_dataset: TODO_IDENTITY
+
+livox:
+  active_driver: TODO_PACKAGE
+  package_version: TODO_VERSION
+  repository: TODO_URL_OR_PARENT_REPOSITORY
+  commit: TODO_FULL_SHA
+  sdk_repository: TODO_URL
+  sdk_commit: TODO_FULL_SHA
+  simulation_repository: TODO_URL
+  simulation_commit: TODO_FULL_SHA
+  patch_artifact: TODO_PATH_OR_URL
+  patch_sha256: TODO_SHA256
+
+swarm_lio:
+  repository: TODO_URL
+  commit: TODO_FULL_SHA
+  patch_artifact: TODO_PATH_OR_URL
+  patch_sha256: TODO_SHA256
+
+racer:
+  repository: TODO_URL
+  commit: TODO_FULL_SHA
+  patch_artifact: TODO_PATH_OR_URL
+  patch_sha256: TODO_SHA256
+  critical_files_manifest_sha256: TODO_SHA256
+
+dependencies:
+  apt:
+    manifest: environment/apt-packages.txt
+    manifest_sha256: TODO_SHA256
+    repository_snapshot: TODO_URL_OR_ID
+  python:
+    version: TODO_PYTHON_VERSION
+    pip_version: TODO_PIP_VERSION
+    manifest: environment/python-requirements.txt
+    manifest_sha256: TODO_SHA256
+    wheelhouse_or_lock: TODO_PATH_OR_URL
+    artifact_sha256: TODO_SHA256
+
+docker:
+  used: false
+  base_image: TODO_NAME_TAG
+  base_digest: TODO_SHA256_DIGEST
+  image: TODO_NAME_TAG
+  digest: TODO_SHA256_DIGEST
+
+host_requirements:
+  gpu:
+    required: TODO_BOOL
+    model: TODO_MODEL
+    driver: TODO_VERSION
+    cuda: TODO_VERSION_OR_NOT_APPLICABLE
+    container_runtime: TODO_VERSION_OR_NOT_APPLICABLE
+  display:
+    required: TODO_BOOL
+    protocol: TODO_X11_OR_WAYLAND
+    display: TODO_VALUE
+    authorization: TODO_METHOD
+  network:
+    mode: TODO_HOST_OR_BRIDGE
+    multicast_required: TODO_BOOL
+    udp_ports: []
+    firewall_profile: TODO_ID
+  devices:
+    required: []
+    udev_rules_sha256: TODO_SHA256_OR_NOT_APPLICABLE
+
+external_assets:
+  manifest: TODO_PATH_OR_URL
+  manifest_sha256: TODO_SHA256
