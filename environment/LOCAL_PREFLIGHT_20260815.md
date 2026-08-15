@@ -23,8 +23,8 @@ bash scripts/verify_platform.sh --observed-host
 
 警告/发布阻断：
 
-- PX4、Swarm-LIO2、Livox simulation、RACER 都仍有本地修改；尚未形成可发布
-  的最小 patch artifact。
+- PX4、Swarm-LIO2、Livox simulation、RACER 都仍有本地修改；已提取候选 patch，
+  但尚未完成最终人工审查和发布批准。
 - `platform.lock.yaml` 仍有 21 个 TODO，故脚本返回码为 `10`，平台不能宣称
   已完成可重建发布。
 

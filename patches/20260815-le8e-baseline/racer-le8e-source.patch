@@ -1,0 +1,3108 @@
+diff --git a/swarm_exploration/active_perception/include/active_perception/graph_node.h b/swarm_exploration/active_perception/include/active_perception/graph_node.h
+index 2843716..6998595 100644
+--- a/swarm_exploration/active_perception/include/active_perception/graph_node.h
++++ b/swarm_exploration/active_perception/include/active_perception/graph_node.h
+@@ -73,7 +73,7 @@ public:
+   vector<ViewNode::Ptr> neighbors_;
+   ViewNode::Ptr parent_;
+   Vector3d pos_, vel_;
+-  double yaw_, yaw_dot_;
++  double yaw_, yaw_dot_, extra_cost_;
+ 
+   // Parameters shared among nodes
+   static double vm_, am_, yd_, ydd_, w_dir_;
+@@ -82,4 +82,4 @@ public:
+   static shared_ptr<SDFMap> map_;
+ };
+ }
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/swarm_exploration/active_perception/include/active_perception/graph_search.h b/swarm_exploration/active_perception/include/active_perception/graph_search.h
+index 1638162..2a6b29a 100644
+--- a/swarm_exploration/active_perception/include/active_perception/graph_search.h
++++ b/swarm_exploration/active_perception/include/active_perception/graph_search.h
+@@ -48,7 +48,10 @@ template <typename NodeT>
+ class NodeCompare {
+ public:
+   bool operator()(const shared_ptr<NodeT>& node1, const shared_ptr<NodeT>& node2) {
+-    return node1->g_value_ > node2->g_value_;
++    const double diff = node1->g_value_ - node2->g_value_;
++    if (fabs(diff) > 1e-9)
++      return diff > 0.0;
++    return node1->id_ > node2->id_;
+   }
+ };
+ 
+diff --git a/swarm_exploration/active_perception/src/frontier_finder.cpp b/swarm_exploration/active_perception/src/frontier_finder.cpp
+index 9277501..238a5d5 100644
+--- a/swarm_exploration/active_perception/src/frontier_finder.cpp
++++ b/swarm_exploration/active_perception/src/frontier_finder.cpp
+@@ -277,42 +277,51 @@ bool FrontierFinder::isInBoxes(
+ }
+ 
+ void FrontierFinder::updateFrontierCostMatrix() {
+-  // std::cout << "cost mat size before remove: " << std::endl;
+-  // for (auto ftr : frontiers_)
+-  //   std::cout << "(" << ftr.costs_.size() << "," << ftr.paths_.size() << "), ";
+-  // std::cout << "" << std::endl;
+-
+-  // std::cout << "cost mat size remove: " << std::endl;
++  // Keep the original incremental representation, but remove stale columns
++  // from the back to the front.  The old code erased in ascending order while
++  // using indices from the pre-removal list; after the first erase every later
++  // index could address the wrong cost/path pair and eventually corrupt a
++  // std::list allocation during a long run.
+   if (!removed_ids_.empty()) {
+-    // Delete path and cost for removed clusters
++    vector<int> ids = removed_ids_;
++    sort(ids.begin(), ids.end(), greater<int>());
+     for (auto it = frontiers_.begin(); it != first_new_ftr_; ++it) {
+-      auto cost_iter = it->costs_.begin();
+-      auto path_iter = it->paths_.begin();
+-      int iter_idx = 0;
+-      for (int i = 0; i < removed_ids_.size(); ++i) {
+-        // Step iterator to the item to be removed
+-        while (iter_idx < removed_ids_[i]) {
++      for (const int id : ids) {
++        if (id < 0) continue;
++        auto cost_iter = it->costs_.begin();
++        auto path_iter = it->paths_.begin();
++        int idx = 0;
++        while (idx < id && cost_iter != it->costs_.end() && path_iter != it->paths_.end()) {
+           ++cost_iter;
+           ++path_iter;
+-          ++iter_idx;
++          ++idx;
++        }
++        if (idx == id && cost_iter != it->costs_.end() && path_iter != it->paths_.end()) {
++          it->costs_.erase(cost_iter);
++          it->paths_.erase(path_iter);
+         }
+-        cost_iter = it->costs_.erase(cost_iter);
+-        path_iter = it->paths_.erase(path_iter);
+       }
+-      // std::cout << "(" << it->costs_.size() << "," << it->paths_.size() << "), ";
+     }
+     removed_ids_.clear();
+   }
+ 
+-  auto updateCost = [](const list<Frontier>::iterator& it1, const list<Frontier>::iterator& it2) {
+-    // std::cout << "(" << it1->id_ << "," << it2->id_ << "), ";
+-    // Search path from old cluster's top viewpoint to new cluster'
++  auto updateCost = [](const list<Frontier>::iterator& it1,
++      const list<Frontier>::iterator& it2) {
++    // A frontier can lose all valid viewpoints during an update.  Keep the
++    // matrix rectangular and make that transition unattractive to the tour
++    // solver instead of dereferencing an empty list.
++    if (it1->viewpoints_.empty() || it2->viewpoints_.empty()) {
++      it1->costs_.push_back(10000.0);
++      it1->paths_.push_back({});
++      it2->costs_.push_back(10000.0);
++      it2->paths_.push_back({});
++      return;
++    }
+     Viewpoint& vui = it1->viewpoints_.front();
+     Viewpoint& vuj = it2->viewpoints_.front();
+     vector<Vector3d> path_ij;
+     double cost_ij = ViewNode::computeCost(
+         vui.pos_, vuj.pos_, vui.yaw_, vuj.yaw_, Vector3d(0, 0, 0), 0, path_ij);
+-    // Insert item for both old and new clusters
+     it1->costs_.push_back(cost_ij);
+     it1->paths_.push_back(path_ij);
+     reverse(path_ij.begin(), path_ij.end());
+@@ -320,21 +329,22 @@ void FrontierFinder::updateFrontierCostMatrix() {
+     it2->paths_.push_back(path_ij);
+   };
+ 
+-  // std::cout << "cost mat add: " << std::endl;
+-  // Compute path and cost between old and new clusters
++  // Existing frontiers need only the columns introduced by new frontiers.
+   for (auto it1 = frontiers_.begin(); it1 != first_new_ftr_; ++it1)
+-    for (auto it2 = first_new_ftr_; it2 != frontiers_.end(); ++it2) updateCost(it1, it2);
++    for (auto it2 = first_new_ftr_; it2 != frontiers_.end(); ++it2)
++      updateCost(it1, it2);
+ 
+-  // Compute path and cost between new clusters
++  // Build the new-to-new block, including the diagonal.
+   for (auto it1 = first_new_ftr_; it1 != frontiers_.end(); ++it1)
+     for (auto it2 = it1; it2 != frontiers_.end(); ++it2) {
+       if (it1 == it2) {
+-        // std::cout << "(" << it1->id_ << "," << it2->id_ << "), ";
+-        it1->costs_.push_back(0);
++        it1->costs_.push_back(0.0);
+         it1->paths_.push_back({});
+-      } else
++      } else {
+         updateCost(it1, it2);
++      }
+     }
++  removed_ids_.clear();
+   first_new_ftr_ = frontiers_.end();
+ 
+   if (!frontiers_.empty())
+diff --git a/swarm_exploration/active_perception/src/graph_node.cpp b/swarm_exploration/active_perception/src/graph_node.cpp
+index 5a97a73..eadcfb7 100644
+--- a/swarm_exploration/active_perception/src/graph_node.cpp
++++ b/swarm_exploration/active_perception/src/graph_node.cpp
+@@ -18,6 +18,7 @@ shared_ptr<SDFMap> ViewNode::map_;
+ ViewNode::ViewNode(const Vector3d& p, const double& y) {
+   pos_ = p;
+   yaw_ = y;
++  extra_cost_ = 0.0;
+   parent_ = nullptr;
+   vel_.setZero();  // vel is zero by default, should be set explicitly
+ }
+@@ -26,7 +27,7 @@ double ViewNode::costTo(const ViewNode::Ptr& node) {
+   vector<Vector3d> path;
+   double c = ViewNode::computeCost(pos_, node->pos_, yaw_, node->yaw_, vel_, yaw_dot_, path);
+   // std::cout << "cost from " << id_ << " to " << node->id_ << " is: " << c << std::endl;
+-  return c;
++  return c + node->extra_cost_;
+ }
+ 
+ double ViewNode::searchPath(const Vector3d& p1, const Vector3d& p2, vector<Vector3d>& path) {
+@@ -97,4 +98,4 @@ double ViewNode::computeCost(const Vector3d& p1, const Vector3d& p2, const doubl
+   // {
+   // }
+ }
+-}  // namespace fast_planner
+\ No newline at end of file
++}  // namespace fast_planner
+diff --git a/swarm_exploration/exploration_manager/include/exploration_manager/expl_data.h b/swarm_exploration/exploration_manager/include/exploration_manager/expl_data.h
+index ae3beee..3774f21 100644
+--- a/swarm_exploration/exploration_manager/include/exploration_manager/expl_data.h
++++ b/swarm_exploration/exploration_manager/include/exploration_manager/expl_data.h
+@@ -3,10 +3,12 @@
+ 
+ #include <Eigen/Eigen>
+ #include <vector>
++#include <deque>
+ #include <bspline/Bspline.h>
+ 
+ using Eigen::Vector3d;
+ using std::vector;
++using std::deque;
+ 
+ namespace fast_planner {
+ struct FSMData {
+@@ -24,6 +26,25 @@ struct FSMData {
+ 
+   // Swarm collision avoidance
+   bool avoid_collision_, go_back_;
++
++  // T1S1 FSM stagnation recovery telemetry/state.
++  struct StagnationSample {
++    ros::Time t;
++    Eigen::Vector3d pos;
++    double speed;
++  };
++  deque<StagnationSample> sliding_recovery_samples_;
++  int sliding_recovery_count_;
++  int sliding_recovery_good_evals_;
++  bool sliding_recovery_pending_;
++  ros::Time sliding_recovery_last_time_;
++
++  bool stagnation_recovery_initialized_;
++  int stagnation_recovery_count_;
++  ros::Time stagnation_recovery_anchor_time_;
++  ros::Time stagnation_recovery_last_time_;
++  Eigen::Vector3d stagnation_recovery_anchor_pos_;
++
+   ros::Time fsm_init_time_;
+   ros::Time last_check_frontier_time_;
+ 
+@@ -40,6 +61,23 @@ struct FSMParam {
+   double attempt_interval_;   // Min interval of opt attempt
+   double pair_opt_interval_;  // Min interval of successful pair opt
+   int repeat_send_num_;
++
++  // T1S1 FSM stagnation recovery parameters.
++  bool sliding_recovery_enabled_;
++  double sliding_recovery_window_;
++  double sliding_recovery_displacement_;
++  double sliding_recovery_mean_speed_;
++  double sliding_recovery_current_speed_;
++  int sliding_recovery_good_evals_required_;
++  double sliding_recovery_cooldown_;
++  int sliding_recovery_max_count_;
++
++  bool stagnation_recovery_enabled_;
++  double stagnation_window_;
++  double stagnation_displacement_;
++  double stagnation_speed_;
++  double stagnation_cooldown_;
++  int stagnation_max_recoveries_;
+ };
+ 
+ struct DroneState {
+diff --git a/swarm_exploration/exploration_manager/include/exploration_manager/fast_exploration_manager.h b/swarm_exploration/exploration_manager/include/exploration_manager/fast_exploration_manager.h
+index f98648b..f6329ea 100644
+--- a/swarm_exploration/exploration_manager/include/exploration_manager/fast_exploration_manager.h
++++ b/swarm_exploration/exploration_manager/include/exploration_manager/fast_exploration_manager.h
+@@ -2,9 +2,13 @@
+ #define _EXPLORATION_MANAGER_H_
+ 
+ #include <ros/ros.h>
++#include <std_msgs/String.h>
+ #include <Eigen/Eigen>
+ #include <memory>
++#include <string>
+ #include <vector>
++#include <deque>
++#include <map>
+ 
+ using Eigen::Vector3d;
+ using std::pair;
+@@ -65,9 +69,138 @@ public:
+   shared_ptr<SDFMap> sdf_map_;
+   // shared_ptr<UniformGrid> uniform_grid_;
+ 
++  // T1S4 planner shadow/fusion (public for FSM callbacks)
++  void notePlannerPlanFail(const std::string& kind = "plan_fail");
++  void notifyFsmRecoveryTrigger(int trigger_count, const Eigen::Vector3d& trigger_pos);
++  void noteIdleReplan(int sign);
++  double idleNet() const { return idle_net_; }
++  void resetIdleWindow();
++  void noteLowSpeedEscapeRequest(const std_msgs::String::ConstPtr& msg);
++  void publishTargetContext(const Vector3d& cur_pos, const Vector3d& cur_vel,
++      const Vector3d& target_pos, double target_yaw, int selected_target_id,
++      const vector<int>& candidate_ids);
++
+ private:
++  struct FailureRegion {
++    Vector3d center;
++    Vector3d approach;
++    std::string reason;
++    int failure_count;
++    double last_failure_time;
++    double blocked_until;
++    bool blacklisted;
++    bool release_logged;
++  };
++
+   shared_ptr<EDTEnvironment> edt_environment_;
+   ros::ServiceClient tsp_client_, acvrp_client_;
++  ros::Publisher target_context_pub_;
++  ros::Subscriber low_speed_escape_sub_;
++  ros::Time last_frontier_context_time_;
++  unsigned long long target_context_episode_id_;
++  std::map<int, int> target_repeat_counts_;
++  int last_context_target_id_;
++  unsigned long long last_context_cluster_id_;
++  bool context_state_initialized_;
++
++  void refreshFailureMemory();
++  void recordViewpointFailure(
++      const Vector3d& from, const Vector3d& pos, const std::string& reason);
++  double failureMemoryPenalty(const Vector3d& from, const Vector3d& pos,
++      bool* blacklisted = nullptr, bool shadow = false);
++  double failureMemoryPenalty(const Vector3d& pos, bool* blacklisted = nullptr);
++  bool failureMemoryBlacklisted(const Vector3d& pos);
++  void applyFailureMemoryCosts(
++      Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num);
++  void applyTargetRepeatCosts(
++      Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num);
++  void applyGainRankCosts(
++      Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num);
++
++  vector<FailureRegion> failure_regions_;
++  bool failure_memory_enabled_, failure_memory_enforce_, failure_memory_shadow_;
++  bool failure_memory_local_enforce_;
++  bool failure_memory_enforce_low_speed_only_;
++  bool failure_memory_hard_prune_;
++  bool failure_memory_frontier_soft_enforce_;
++  double failure_frontier_max_fraction_, failure_frontier_penalty_ratio_;
++  bool repeat_frontier_soft_enforce_;
++  int repeat_frontier_threshold_, repeat_frontier_strong_threshold_;
++  double repeat_frontier_penalty_ratio_, repeat_frontier_max_fraction_;
++  double repeat_frontier_low_gain_threshold_, repeat_frontier_cooldown_sec_;
++  double repeat_frontier_max_penalty_ratio_;
++  bool gain_rank_enforce_;
++  double gain_rank_gain_weight_, gain_rank_gain_cap_, gain_rank_bonus_ratio_;
++  double gain_rank_low_gain_threshold_, gain_rank_low_gain_penalty_ratio_;
++  double gain_rank_max_fraction_;
++  std::map<int, double> repeat_frontier_blocked_until_;
++  bool all_frontiers_suppressed_;
++
++  void updatePlannerShadowState(const std::string& viewpoint = "");
++  void maybeArmFusionEscape();
++  bool fusionCollisionGuardOk() const;
++  void maybeApplyPlannerEscape(vector<int>& ftr_ids, const Vector3d& cur_pos);
++  bool planner_escape_shadow_, planner_escape_enabled_, planner_escape_fusion_enabled_;
++  bool shadow_candidate_active_, fusion_escape_armed_;
++  bool low_speed_escape_requested_;
++  bool low_speed_escape_urgent_;
++  bool fusion_require_low_motion_;
++  std::string planner_escape_trigger_mode_;
++  double fusion_match_window_sec_;
++  double planner_escape_startup_guard_sec_;
++  ros::Time planner_last_candidate_time_, fsm_last_trigger_time_;
++  ros::Time low_speed_escape_request_time_;
++  Eigen::Vector3d fsm_last_trigger_pos_;
++  Eigen::Vector3d low_speed_escape_request_pos_;
++  std::string fusion_match_mode_;
++  std::string low_speed_escape_topic_;
++  int fsm_recovery_triggers_;
++  int low_speed_escape_request_id_;
++  int planner_consecutive_failures_, planner_fail_window_count_;
++  int planner_escape_count_, planner_shadow_candidate_count_;
++  int planner_escape_max_count_, planner_escape_fail_threshold_;
++  double planner_escape_repeat_threshold_, planner_escape_cooldown_sec_;
++  double planner_escape_urgent_cooldown_sec_;
++  double planner_escape_fail_window_sec_;
++  double planner_escape_suppress_sec_, planner_escape_topology_bonus_;
++  double planner_escape_cluster_radius_m_;
++  ros::Time planner_escape_last_time_, planner_suppress_until_;
++  bool planner_escape_idle_enabled_;
++  double planner_escape_idle_window_sec_, planner_escape_idle_net_threshold_;
++  double planner_escape_idle_skip_sec_;
++  bool planner_escape_v2_enabled_, planner_escape_v2_active_;
++  bool planner_escape_v2_fallback_enabled_, planner_escape_v2_trigger_on_planner_fail_;
++  bool planner_escape_v2_sticky_center_, planner_escape_v2_failed_target_memory_;
++  bool planner_escape_v2_boundary_guard_enabled_, planner_escape_v2_postplan_guard_enabled_;
++  bool planner_escape_v2_progress_guard_enabled_;
++  bool trajectory_safety_global_postplan_guard_enabled_;
++  bool trajectory_safety_reject_unknown_;
++  bool planner_escape_v2_goal_overridden_, planner_last_fail_origin_valid_;
++  double planner_escape_v2_clear_radius_m_, planner_escape_v2_min_step_m_;
++  double planner_escape_v2_max_step_m_, planner_escape_v2_ttl_sec_;
++  double planner_escape_v2_min_clearance_m_, planner_escape_v2_memory_ttl_sec_;
++  double planner_escape_v2_max_cost_, planner_escape_v2_failed_target_radius_m_;
++  double planner_escape_v2_boundary_margin_xy_m_, planner_escape_v2_postplan_dt_sec_;
++  double planner_escape_v2_progress_horizon_sec_, planner_escape_v2_min_progress_xy_m_;
++  double trajectory_safety_boundary_margin_xy_m_;
++  double trajectory_safety_extra_clearance_m_, trajectory_safety_dt_sec_;
++  int planner_escape_v2_target_repeat_threshold_;
++  ros::Time planner_escape_v2_until_, planner_last_detailed_fail_time_;
++  Eigen::Vector3d planner_escape_v2_center_, planner_escape_v2_goal_;
++  Eigen::Vector3d planner_last_fail_origin_;
++  vector<pair<Vector3d, double>> planner_escape_v2_failed_targets_;
++  std::deque<std::pair<ros::Time, int>> idle_events_;
++  std::deque<ros::Time> planner_fail_events_;
++  int idle_net_;
++  ros::Time idle_origin_;
++  bool idle_origin_set_;
++  Eigen::Vector3d planner_suppressed_center_, planner_last_fail_pos_;
++  std::deque<std::string> planner_recent_views_;
++  double failure_region_size_m_, failure_cooldown_sec_, failure_blacklist_sec_;
++  double failure_forget_sec_, failure_cost_penalty_;
++  double failure_kino_scale_, failure_clearance_protect_m_;
++  double failure_protected_scale_, failure_approach_cos_;
++  int failure_blacklist_threshold_;
+ 
+   // Find optimal tour for coarse viewpoints of all frontiers
+   void findGlobalTour(const Vector3d& cur_pos, const Vector3d& cur_vel, const Vector3d cur_yaw,
+@@ -93,4 +226,4 @@ public:
+ 
+ }  // namespace fast_planner
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml b/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml
+index 60b1a30..0fa8181 100644
+--- a/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml
++++ b/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml
+@@ -8,10 +8,10 @@
+     <arg name="map_size_y" default="22"/>
+     <arg name="map_size_z" default="3.5"/>
+     <arg name="odom_prefix" default="odom"/>
+-    <arg name="simulation" default="false"/>
++    <arg name="simulation" default="px4"/>
+     <arg name="odometry_topic" default="$(arg odom_prefix)_$(arg drone_id)"/>
+     <!-- <arg name="odometry_topic" default="/pcl_render_node/odom_$(arg drone_id)"/> -->
+-    <arg name="sensor_pose_topic" default="/pcl_render_node/sensor_pose_$(arg drone_id)"/> 
++    <arg name="sensor_pose_topic" default="/lidar_slam/pose_$(arg drone_id)"/>  <!-- /pcl_render_node/sensor_pose_$(arg drone_id) -->
+     <arg name="depth_topic" default="/pcl_render_node/depth_$(arg drone_id)"/> 
+     <arg name="cx" default="324.0879821777344"/>
+     <arg name="cy" default="239.10362243652344"/>
+@@ -28,7 +28,7 @@
+     <arg name="map_size_y" value="$(arg map_size_y)"/>
+     <arg name="map_size_z" value="$(arg map_size_z)"/>
+ 
+-    <arg name="odometry_topic" default="$(arg odometry_topic)"/>
++    <arg name="odometry_topic" value="$(arg odometry_topic)"/>
+     <arg name="sensor_pose_topic" value="$(arg sensor_pose_topic)"/> 
+ 
+     <!-- sensor pose: transform of camera frame in the world frame -->
+@@ -37,7 +37,8 @@
+     <!-- subscribe ONLY TO ONE of the two topics -->
+     <arg name="depth_topic" value="$(arg depth_topic)"/> 
+ 
+-    <arg name="cloud_topic" value="/pcl_render_node/cloud_$(arg drone_id)"/>
++    <arg name="cloud_topic" value="/cloud_registered_$(arg drone_id)" if="$(eval arg('simulation') == 'px4' or arg('simulation') == 'false')" />
++    <arg name="cloud_topic" value="/pcl_render_node/cloud_$(arg drone_id)" if="$(eval arg('simulation') == 'light')" />
+ 
+     <!-- intrinsic params of the depth camera -->
+     <arg name="cx" value="$(arg cx)"/>
+@@ -46,7 +47,7 @@
+     <arg name="fy" value="$(arg fy)"/>
+ 
+     <!-- maximum velocity and acceleration the drone will reach -->
+-    <arg name="max_vel" value="1.5" />
++    <arg name="max_vel" value="1.5" /> <!-- 最大速度与最大加速度 -->
+     <arg name="max_acc" value="1.0" />
+     <!-- <arg name="max_vel" value="1.0" />
+     <arg name="max_acc" value="0.8" /> -->
+@@ -61,7 +62,7 @@
+     <remap from="/planning/replan" to="/planning/replan_$(arg drone_id)" />
+     <remap from="/planning/new" to="/planning/new_$(arg drone_id)" />
+     
+-    <remap from="/position_cmd" to="planning/pos_cmd_$(arg drone_id)"/>
++    <remap from="/position_cmd" to="/planning/pos_cmd_$(arg drone_id)"/> <!-- 前面加了斜杠 -->
+     <remap from="planning/position_cmd_vis" to="planning/position_cmd_vis_$(arg drone_id)" />
+     <remap from="planning/travel_traj" to="planning/travel_traj_$(arg drone_id)" />
+ 
+@@ -78,7 +79,7 @@
+   </node>
+ 
+   <!-- use simulator -->
+-  <include file="$(find exploration_manager)/launch/simulator_light.xml" if="$(arg simulation)">
++  <include file="$(find exploration_manager)/launch/simulator_light.xml" if="$(eval arg('simulation') == 'light')">
+     <arg name="drone_id" value="$(arg drone_id)"/>
+     <arg name="drone_num" value="$(arg drone_num)"/>
+     <arg name="init_x"   value="$(arg init_x)"/>
+diff --git a/swarm_exploration/exploration_manager/launch/single_drone_planner.xml b/swarm_exploration/exploration_manager/launch/single_drone_planner.xml
+index cbeac00..f1775a7 100644
+--- a/swarm_exploration/exploration_manager/launch/single_drone_planner.xml
++++ b/swarm_exploration/exploration_manager/launch/single_drone_planner.xml
+@@ -54,19 +54,20 @@
+     <remap from="/sdf_map/occupancy_local_inflate" to="/sdf_map/occupancy_local_inflate_$(arg drone_id)" />
+     <remap from="/sdf_map/unknown" to="/sdf_map/unknown_$(arg drone_id)" />
+     <remap from="/sdf_map/update_range" to="/sdf_map/update_range_$(arg drone_id)" />
+-    <remap from="/sdf_map/basecoor" to="/swarm_sim_tf/basecoor_$(arg drone_id)" if="$(arg simulation)"/>
+-    <remap from="/sdf_map/basecoor" to="/swarm_drones/swarm_drone_basecoor" unless="$(arg simulation)"/>
++    <remap from="/sdf_map/basecoor" to="/swarm_sim_tf/basecoor_$(arg drone_id)" if="$(eval arg('simulation') == 'light')"/>
++    <remap from="/sdf_map/basecoor" to="/pcl_render_node/init" if="$(eval arg('simulation') == 'px4')"/>
++    <remap from="/sdf_map/basecoor" to="/swarm_drones/swarm_drone_basecoor" if="$(eval arg('simulation') == 'false' or arg('simulation') == 'full')"/>
+     
+ 
+-    <param name="sdf_map/resolution"      value="0.1" /> 
++    <param name="sdf_map/resolution"      value="0.05" /> 
+     <param name="sdf_map/map_size_x"   value="$(arg map_size_x)" /> 
+     <param name="sdf_map/map_size_y"   value="$(arg map_size_y)" /> 
+     <param name="sdf_map/map_size_z"   value="$(arg map_size_z)" /> 
+-    <param name="sdf_map/obstacles_inflation"     value="0.199" /> 
++    <param name="sdf_map/obstacles_inflation"     value="0.35" /> 
+     <!-- <param name="sdf_map/obstacles_inflation"     value="0.0" />  -->
+     <param name="sdf_map/local_bound_inflate"    value="0.5"/>
+     <param name="sdf_map/local_map_margin" value="50"/>
+-    <param name="sdf_map/ground_height"        value="-1.0"/>
++    <param name="sdf_map/ground_height"        value="1.15"/>
+     <param name="sdf_map/default_dist"        value="0.5"/>
+     
+     <param name="sdf_map/p_hit"  value="0.65"/>
+@@ -76,7 +77,7 @@
+     <param name="sdf_map/p_occ"  value="0.80"/>
+     <param name="sdf_map/min_ray_length" value="0.5"/>
+     <param name="sdf_map/max_ray_length" value="4.5"/>
+-    <param name="sdf_map/virtual_ceil_height"   value="-10"/>
++    <param name="sdf_map/virtual_ceil_height"   value="2.7"/>
+     <param name="sdf_map/optimistic" value="true" type="bool"/>
+     <param name="sdf_map/signed_dist" value="false" type="bool"/>
+     <!-- <param name="sdf_map/box_min_x" value="-4" type="double"/>
+@@ -85,12 +86,12 @@
+     <param name="sdf_map/box_max_x" value="4" type="double"/>
+     <param name="sdf_map/box_max_y" value="7" type="double"/>
+     <param name="sdf_map/box_max_z" value="2.0" type="double"/> -->
+-    <param name="sdf_map/box_min_x" value="-7" type="double"/>
+-    <param name="sdf_map/box_min_y" value="-15" type="double"/>
+-    <param name="sdf_map/box_min_z" value="0" type="double"/> 
+-    <param name="sdf_map/box_max_x" value="7" type="double"/>
+-    <param name="sdf_map/box_max_y" value="15" type="double"/>
+-    <param name="sdf_map/box_max_z" value="1.7" type="double"/>
++    <param name="sdf_map/box_min_x" value="-9.7" type="double"/><!-- 20x20 racer_example -->
++    <param name="sdf_map/box_min_y" value="-9.7" type="double"/>
++    <param name="sdf_map/box_min_z" value="1.15" type="double"/>
++    <param name="sdf_map/box_max_x" value="9.7" type="double"/>
++    <param name="sdf_map/box_max_y" value="9.7" type="double"/>
++    <param name="sdf_map/box_max_z" value="2.7" type="double"/>
+     <param name="sdf_map/no_drone_1" value="false" type="bool"/>
+ 
+     <param name="map_ros/cx" value="$(arg cx)"/>
+@@ -111,13 +112,29 @@
+     <param name="map_ros/frame_id"      value="world"/>
+ 
+     <!-- Fsm -->
+-    <param name="fsm/thresh_replan1" value="0.2" type="double"/>
++    <param name="fsm/thresh_replan1" value="0.5" type="double"/>
+     <param name="fsm/thresh_replan2" value="0.2" type="double"/>
+-    <param name="fsm/thresh_replan3" value="1.5" type="double"/>
++    <param name="fsm/thresh_replan3" value="1.8" type="double"/>
+     <!-- <param name="fsm/thresh_replan1" value="0.00001" type="double"/> -->
+     <!-- <param name="fsm/thresh_replan2" value="100.0" type="double"/> -->
+     <!-- <param name="fsm/thresh_replan3" value="0.1" type="double"/> -->
+-    <param name="fsm/replan_time" value="0.200" type="double"/>
++    <param name="fsm/replan_time" value="0.28" type="double"/>
++    <!-- T1S1 FSM stagnation recovery; disabled unless runner sets enabled=true. -->
++    <param name="fsm/stagnation_recovery_enabled" value="false" type="bool"/>
++    <param name="fsm/stagnation_window" value="20.0" type="double"/>
++    <param name="fsm/stagnation_displacement" value="0.8" type="double"/>
++    <param name="fsm/stagnation_speed" value="0.12" type="double"/>
++    <param name="fsm/stagnation_cooldown" value="35.0" type="double"/>
++    <param name="fsm/stagnation_max_recoveries" value="2" type="int"/>
++    <!-- T1S2A FSM sliding stagnation recovery; disabled unless runner sets enabled=true. -->
++    <param name="fsm/sliding_recovery_enabled" value="false" type="bool"/>
++    <param name="fsm/sliding_recovery_window" value="15.0" type="double"/>
++    <param name="fsm/sliding_recovery_displacement" value="1.0" type="double"/>
++    <param name="fsm/sliding_recovery_mean_speed" value="0.20" type="double"/>
++    <param name="fsm/sliding_recovery_cooldown" value="45.0" type="double"/>
++    <param name="fsm/sliding_recovery_max_count" value="2" type="int"/>
++    <param name="fsm/sliding_recovery_current_speed" value="0.25" type="double"/>
++    <param name="fsm/sliding_recovery_good_evals_required" value="3" type="int"/>
+     <param name="fsm/sync_interval" value="0.200" type="double"/>
+     <param name="fsm/wait_delete_duration" value="0.05" type="double"/>
+     <param name="fsm/gain_thresh" value="10" type="int"/>
+@@ -132,15 +149,15 @@
+     <param name="partitioning/consistent_cost2" value="8" type="double"/>;
+     <param name="partitioning/w_unknown" value="0.0" type="double"/>;
+     <param name="partitioning/grid_size" value="5.0" type="double"/>;
+-    <param name="partitioning/use_swarm_tf" value="true" type="bool"/>;
++    <param name="partitioning/use_swarm_tf" value="false" type="bool"/>;
+ 
+     <!-- Exploration manager -->
+ 
+     <param name="exploration/refine_local" value="true" type="bool"/>
+-    <param name="exploration/refined_num" value="7" type="int"/>
+-    <param name="exploration/refined_radius" value="5.0" type="double"/>
+-    <param name="exploration/max_decay" value="0.8" type="double"/>
+-    <param name="exploration/top_view_num" value="15" type="int"/>
++    <param name="exploration/refined_num" value="4" type="int"/>
++    <param name="exploration/refined_radius" value="6.0" type="double"/>
++    <param name="exploration/max_decay" value="0.82" type="double"/>
++    <param name="exploration/top_view_num" value="16" type="int"/>
+     <param name="exploration/vm" value="$(eval 1.0 * arg('max_vel'))" type="double"/>
+     <param name="exploration/am" value="$(eval 1.0 * arg('max_acc'))" type="double"/>
+     <param name="exploration/yd" value="$(eval 80 * 3.1415926 / 180.0)" type="double"/>
+@@ -153,18 +170,104 @@
+     <param name="exploration/drone_id" value="$(arg drone_id)" type="int"/>
+     <param name="exploration/init_plan_num" value="2" type="int"/>
+ 
+-    <param name="frontier/cluster_min" value="100" type="int"/>
+-    <param name="frontier/cluster_size_xy" value="2.0" type="double"/>
++    <!-- S3F failure-viewpoint memory. Baseline runs record events with enforcement disabled. -->
++    <param name="failure_memory/enabled" value="true" type="bool"/>
++    <param name="failure_memory/enforce" value="true" type="bool"/>
++    <param name="failure_memory/enforce_low_speed_only" value="true" type="bool"/>
++    <param name="failure_memory/hard_prune" value="false" type="bool"/>
++    <param name="failure_memory/shadow" value="false" type="bool"/>
++    <param name="failure_memory/local_enforce" value="true" type="bool"/>
++    <param name="failure_memory/frontier_soft_enforce" value="true" type="bool"/>
++    <param name="failure_memory/frontier_max_fraction" value="0.67" type="double"/>
++    <param name="failure_memory/frontier_penalty_ratio" value="0.25" type="double"/>
++    <param name="failure_memory/region_size_m" value="4.8" type="double"/>
++    <param name="failure_memory/cooldown_sec" value="90.0" type="double"/>
++    <param name="failure_memory/blacklist_threshold" value="1" type="int"/>
++    <param name="failure_memory/blacklist_sec" value="120.0" type="double"/>
++    <param name="failure_memory/forget_sec" value="180.0" type="double"/>
++    <param name="failure_memory/cost_penalty" value="3.0" type="double"/>
++    <param name="failure_memory/kino_scale" value="0.0" type="double"/>
++    <param name="failure_memory/clearance_protect_m" value="0.8" type="double"/>
++    <param name="failure_memory/protected_scale" value="0.25" type="double"/>
++    <param name="failure_memory/approach_cos" value="0.5" type="double"/>
++
++    <!-- T1S4 planner shadow/fusion; disabled unless runner enables them. -->
++    <param name="planner_escape/shadow" value="true" type="bool"/>
++    <param name="planner_escape/enabled" value="true" type="bool"/>
++    <param name="planner_escape/fusion_enabled" value="true" type="bool"/>
++    <param name="planner_escape/idle_enabled" value="false" type="bool"/>
++    <param name="planner_escape/idle_window_sec" value="30.0" type="double"/>
++    <param name="planner_escape/idle_net_threshold" value="22" type="double"/>
++    <param name="planner_escape/idle_skip_sec" value="40.0" type="double"/>
++    <param name="planner_escape/fusion_match_mode" value="legacy" type="string"/>
++    <param name="planner_escape/fusion_match_window_sec" value="30.0" type="double"/>
++    <param name="planner_escape/require_low_motion" value="false" type="bool"/>
++    <param name="planner_escape/trigger_mode" value="low_speed_escape" type="string"/>
++    <param name="planner_escape/startup_guard_sec" value="40.0" type="double"/>
++    <param name="planner_escape/low_speed_topic" value="/planning/low_speed_escape_$(arg drone_id)" type="string"/>
++    <param name="planner_escape/consecutive_fail_threshold" value="5" type="int"/>
++    <param name="planner_escape/repeat_fraction_threshold" value="0.28" type="double"/>
++    <param name="planner_escape/max_escape_count" value="12" type="int"/>
++    <param name="planner_escape/cooldown_sec" value="35" type="double"/>
++    <param name="planner_escape/urgent_cooldown_sec" value="15" type="double"/>
++    <param name="planner_escape/fail_window_sec" value="12.0" type="double"/>
++    <param name="planner_escape/repeat_frontier_soft_enforce" value="true" type="bool"/>
++    <param name="planner_escape/repeat_frontier_threshold" value="12" type="int"/>
++    <param name="planner_escape/repeat_frontier_strong_threshold" value="16" type="int"/>
++    <param name="planner_escape/repeat_frontier_penalty_ratio" value="0.15" type="double"/>
++    <param name="planner_escape/repeat_frontier_max_fraction" value="0.67" type="double"/>
++    <param name="planner_escape/repeat_frontier_low_gain_threshold" value="2.0" type="double"/>
++    <param name="planner_escape/repeat_frontier_cooldown_sec" value="35" type="double"/>
++    <param name="planner_escape/repeat_frontier_max_penalty_ratio" value="0.30" type="double"/>
++    <param name="planner_escape/gain_rank_enforce" value="true" type="bool"/>
++    <param name="planner_escape/gain_rank_gain_weight" value="0.06" type="double"/>
++    <param name="planner_escape/gain_rank_gain_cap" value="20.0" type="double"/>
++    <param name="planner_escape/gain_rank_bonus_ratio" value="0.18" type="double"/>
++    <param name="planner_escape/gain_rank_low_gain_threshold" value="2.0" type="double"/>
++    <param name="planner_escape/gain_rank_low_gain_penalty_ratio" value="0.08" type="double"/>
++    <param name="planner_escape/gain_rank_max_fraction" value="0.75" type="double"/>
++    <param name="planner_escape/cluster_suppress_sec" value="60" type="double"/>
++    <param name="planner_escape/topology_bonus" value="0.30" type="double"/>
++    <param name="planner_escape/cluster_radius_m" value="4.5" type="double"/>
++    <param name="planner_escape/v2_enabled" value="true" type="bool"/>
++    <param name="planner_escape/v2_clear_radius_m" value="5.5" type="double"/>
++    <param name="planner_escape/v2_min_step_m" value="2.5" type="double"/>
++    <param name="planner_escape/v2_max_step_m" value="5.0" type="double"/>
++    <param name="planner_escape/v2_ttl_sec" value="45.0" type="double"/>
++    <param name="planner_escape/v2_min_clearance_m" value="0.55" type="double"/>
++    <param name="planner_escape/v2_memory_ttl_sec" value="180.0" type="double"/>
++    <param name="planner_escape/v2_max_cost" value="2500.0" type="double"/>
++    <param name="planner_escape/v2_fallback_enabled" value="true" type="bool"/>
++    <param name="planner_escape/v2_trigger_on_planner_fail" value="true" type="bool"/>
++    <param name="planner_escape/v2_target_repeat_threshold" value="8" type="int"/>
++    <param name="planner_escape/v2_sticky_center" value="true" type="bool"/>
++    <param name="planner_escape/v2_failed_target_memory" value="true" type="bool"/>
++    <param name="planner_escape/v2_failed_target_radius_m" value="0.8" type="double"/>
++    <param name="planner_escape/v2_boundary_guard_enabled" value="false" type="bool"/>
++    <param name="planner_escape/v2_boundary_margin_xy_m" value="0.35" type="double"/>
++    <param name="planner_escape/v2_postplan_guard_enabled" value="true" type="bool"/>
++    <param name="planner_escape/v2_postplan_dt_sec" value="0.05" type="double"/>
++    <param name="planner_escape/v2_progress_guard_enabled" value="false" type="bool"/>
++    <param name="planner_escape/v2_progress_horizon_sec" value="1.6" type="double"/>
++    <param name="planner_escape/v2_min_progress_xy_m" value="0.25" type="double"/>
++    <param name="trajectory_safety/global_postplan_guard_enabled" value="false" type="bool"/>
++    <param name="trajectory_safety/reject_unknown" value="false" type="bool"/>
++    <param name="trajectory_safety/boundary_margin_xy_m" value="0.50" type="double"/>
++    <param name="trajectory_safety/extra_clearance_m" value="0.10" type="double"/>
++    <param name="trajectory_safety/dt_sec" value="0.05" type="double"/>
++
++    <param name="frontier/cluster_min" value="90" type="int"/>
++    <param name="frontier/cluster_size_xy" value="2.5" type="double"/>
+     <param name="frontier/cluster_size_z" value="10.0" type="double"/>
+-    <param name="frontier/min_candidate_dist" value="0.5" type="double"/>
+-    <param name="frontier/min_candidate_clearance" value="0.21" type="double"/>
+-    <param name="frontier/candidate_dphi" value="$(eval 15 * 3.1415926 / 180.0)" type="double"/>
+-    <param name="frontier/candidate_rnum" value="3" type="int"/>
++    <param name="frontier/min_candidate_dist" value="0.7" type="double"/>
++    <param name="frontier/min_candidate_clearance" value="0.40" type="double"/>
++    <param name="frontier/candidate_dphi" value="0.2617993878" type="double"/>
++    <param name="frontier/candidate_rnum" value="6" type="int"/>
+     <param name="frontier/candidate_rmin" value="1.0" type="double"/>
+-    <param name="frontier/candidate_rmax" value="1.5" type="double"/>
++    <param name="frontier/candidate_rmax" value="2.2" type="double"/>
+     <param name="frontier/down_sample" value="3" type="int"/>;
+     <param name="frontier/min_visib_num" value="30" type="int"/>;
+-    <param name="frontier/min_view_finish_fraction" value="0.2" type="double"/>;
++    <param name="frontier/min_view_finish_fraction" value="0.46" type="double"/>;
+ 
+ 
+     <!-- Perception utils -->
+@@ -179,7 +282,7 @@
+     <param name="heading_planner/half_vert_num" value="5" type="int"/>
+     <param name="heading_planner/lambda1" value="2.0" type="double"/>
+     <param name="heading_planner/lambda2" value="1.0" type="double"/>
+-    <param name="heading_planner/max_yaw_rate" value="$(eval 10 * 3.1415926 / 180.0)" type="double"/>
++    <param name="heading_planner/max_yaw_rate" value="0.6108652382" type="double"/>
+     <param name="heading_planner/w" value="20000.0" type="double"/>
+     <param name="heading_planner/weight_type" value="1" type="double"/>
+ 
+@@ -190,7 +293,7 @@
+     <param name="manager/max_jerk" value="4" type="double"/>
+     <param name="manager/dynamic_environment" value="0" type="int"/>
+     <param name="manager/local_segment_length" value="6.0" type="double"/>
+-    <param name="manager/clearance_threshold" value="0.2" type="double"/>
++    <param name="manager/clearance_threshold" value="0.35" type="double"/>
+     <param name="manager/control_points_distance" value="0.5" type="double"/>
+     <param name="manager/use_geometric_path" value="true" type="bool"/>
+     <param name="manager/use_kinodynamic_path" value="true" type="bool"/>
+@@ -209,11 +312,11 @@
+     <param name="search/vel_margin" value="0.25" type="double"/>
+     <param name="search/max_acc" value="$(arg max_acc)" type="double"/>
+     <param name="search/w_time" value="10.0" type="double"/>
+-    <param name="search/horizon" value="5.0" type="double"/>
+-    <param name="search/lambda_heu" value="10.0" type="double"/>
++    <param name="search/horizon" value="5.5" type="double"/>
++    <param name="search/lambda_heu" value="12.0" type="double"/>
+     <param name="search/resolution_astar" value="0.025" type="double"/>
+     <param name="search/time_resolution" value="0.8" type="double"/>
+-    <param name="search/margin" value="0.2" type="double"/>
++    <param name="search/margin" value="0.35" type="double"/>
+     <param name="search/allocate_num" value="100000" type="int"/>
+     <param name="search/check_num" value="10" type="int"/>
+     <param name="search/optimistic" value="false" type="bool"/>
+@@ -225,7 +328,7 @@
+ 
+   <!-- trajectory optimization -->
+     <param name="optimization/ld_smooth" value="5.0" type="double"/>
+-    <param name="optimization/ld_dist" value="10.0" type="double"/>
++    <param name="optimization/ld_dist" value="60.0" type="double"/>
+     <param name="optimization/ld_feasi" value="2.0" type="double"/>
+     <param name="optimization/ld_start" value="100.0" type="double"/>
+     <param name="optimization/ld_end" value="0.5" type="double"/>
+@@ -235,7 +338,7 @@
+     <param name="optimization/ld_time" value="1.5" type="double"/>
+     <param name="optimization/ld_swarm" value="5.0" type="double"/>
+     <param name="optimization/swarm_safe_dist" value="1.0" type="double"/>
+-    <param name="optimization/dist0" value="0.7" type="double"/>
++    <param name="optimization/dist0" value="1.5" type="double"/>
+     <param name="optimization/max_vel" value="$(arg max_vel)" type="double"/>
+     <param name="optimization/max_acc" value="$(arg max_acc)" type="double"/>
+     <param name="optimization/algorithm1" value="15" type="int"/>
+diff --git a/swarm_exploration/exploration_manager/launch/swarm_exploration.launch b/swarm_exploration/exploration_manager/launch/swarm_exploration.launch
+index 7ec11e1..a9bd85a 100644
+--- a/swarm_exploration/exploration_manager/launch/swarm_exploration.launch
++++ b/swarm_exploration/exploration_manager/launch/swarm_exploration.launch
+@@ -1,148 +1,65 @@
+ <launch>
++
++  <!-- remap from="/map_generator/global_cloud" to="/cloud_registered"/ -->
+   <!-- size of map, change the size in x, y, z according to your application -->
+-  <arg name="map_size_x" value="35.0"/>
+-  <arg name="map_size_y" value="35.0"/>
+-  <arg name="map_size_z" value=" 3.5"/>
++  <arg name="map_size_x" value="26"/> <!-- 地图范围 -->
++  <arg name="map_size_y" value="26"/>
++  <arg name="map_size_z" value=" 3.0"/>
+ 
+   <!-- Global odom prefix -->
+-  <arg name="odom_prefix" value="/state_ukf/odom" />
+-  <arg name="drone_num" value="5" />
++  <arg name="odom_prefix" value="/lidar_slam/odom" />  <!-- mavros_relay -->
++  <arg name="drone_num" value="1" />
++  <arg name="simulation" default="px4"/> <!---->
+ 
+     <!-- Map generation -->
+   <!-- <node pkg ="map_generator" name ="map_pub" type ="map_pub" output = "screen" args="$(find map_generator)/resource/office.pcd">    
+   </node> -->
+-  <node pkg ="map_generator" name ="map_pub" type ="map_pub" output = "screen" args="$(find map_generator)/resource/pillar.pcd">    
++  <!--
++  <node pkg ="map_generator" name ="map_pub" type ="map_pub" output = "screen" args="$(find map_generator)/resource/my_world.pcd">    
+   </node>
++  -->
+ 
+-<include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
++  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+     <arg name="drone_id" value="1"/>
+     <arg name="init_x"   value="0"/>
+-    <arg name="init_y"   value="0"/>
+-    <arg name="init_z"   value="1"/> 
++    <arg name="init_y"   value="0"/>  <!-- -1.5 -->
++    <arg name="init_z"   value="0"/>  <!-- 1 -->
+     <arg name="map_size_x" value="$(arg map_size_x)"/>
+     <arg name="map_size_y" value="$(arg map_size_y)"/>
+     <arg name="map_size_z" value="$(arg map_size_z)"/>
+     <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+     <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
++    <arg name="simulation" value="$(arg simulation)"/>
+   </include>
+ 
++<!--
+   <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+     <arg name="drone_id" value="2"/>
+-    <arg name="init_x"   value="0"/>
+-    <arg name="init_y"   value="-1"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include>
+-
+-  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="3"/>
+-    <arg name="init_x"   value="1"/>
+-    <arg name="init_y"   value="-1"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include>
+-
+-  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="4"/>
+-    <arg name="init_x"   value="1"/>
++    <arg name="init_x"   value="1.5"/>
+     <arg name="init_y"   value="0"/>
+-    <arg name="init_z"   value="1"/> 
++    <arg name="init_z"   value="0"/> 
+     <arg name="map_size_x" value="$(arg map_size_x)"/>
+     <arg name="map_size_y" value="$(arg map_size_y)"/>
+     <arg name="map_size_z" value="$(arg map_size_z)"/>
+     <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+     <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
++    <arg name="simulation" value="$(arg simulation)"/>
+   </include>
++  -->
+ 
+-  <!-- <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="5"/>
+-    <arg name="init_x"   value="1"/>
+-    <arg name="init_y"   value="1"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include>
+-  
+-
++<!--
+   <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="6"/>
++    <arg name="drone_id" value="3"/>
+     <arg name="init_x"   value="0"/>
+-    <arg name="init_y"   value="1"/>
+-    <arg name="init_z"   value="1"/> 
++    <arg name="init_y"   value="1.5"/>
++    <arg name="init_z"   value="0"/>  
+     <arg name="map_size_x" value="$(arg map_size_x)"/>
+     <arg name="map_size_y" value="$(arg map_size_y)"/>
+     <arg name="map_size_z" value="$(arg map_size_z)"/>
+     <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+     <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include> -->
+-
+-  <!-- <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="7"/>
+-    <arg name="init_x"   value="-1"/>
+-    <arg name="init_y"   value="1"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
++    <arg name="simulation" value="$(arg simulation)"/>
+   </include>
+-
+-  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="8"/>
+-    <arg name="init_x"   value="-1"/>
+-    <arg name="init_y"   value="0"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include>
+-
+-  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="9"/>
+-    <arg name="init_x"   value="-1"/>
+-    <arg name="init_y"   value="-1"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include> -->
+-
+-  <!-- <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
+-    <arg name="drone_id" value="10"/>
+-    <arg name="init_x"   value="0"/>
+-    <arg name="init_y"   value="-5.0"/>
+-    <arg name="init_z"   value="1"/> 
+-    <arg name="map_size_x" value="$(arg map_size_x)"/>
+-    <arg name="map_size_y" value="$(arg map_size_y)"/>
+-    <arg name="map_size_z" value="$(arg map_size_z)"/>
+-    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
+-    <arg name="drone_num" value="$(arg drone_num)"/>
+-    <arg name="simulation" default="true"/>
+-  </include> -->
+-
++  -->
++  
+ </launch>
+diff --git a/swarm_exploration/exploration_manager/src/fast_exploration_fsm.cpp b/swarm_exploration/exploration_manager/src/fast_exploration_fsm.cpp
+index 77e154d..71f4a57 100644
+--- a/swarm_exploration/exploration_manager/src/fast_exploration_fsm.cpp
++++ b/swarm_exploration/exploration_manager/src/fast_exploration_fsm.cpp
+@@ -35,6 +35,24 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
+   nh.param("fsm/pair_opt_interval", fp_->pair_opt_interval_, 1.0);
+   nh.param("fsm/repeat_send_num", fp_->repeat_send_num_, 10);
+ 
++  // T1S1 FSM stagnation recovery: conservative soft replan from current odom state.
++  nh.param("fsm/stagnation_recovery_enabled", fp_->stagnation_recovery_enabled_, false);
++  nh.param("fsm/stagnation_window", fp_->stagnation_window_, 20.0);
++  nh.param("fsm/stagnation_displacement", fp_->stagnation_displacement_, 0.8);
++  nh.param("fsm/stagnation_speed", fp_->stagnation_speed_, 0.12);
++  nh.param("fsm/stagnation_cooldown", fp_->stagnation_cooldown_, 35.0);
++  nh.param("fsm/stagnation_max_recoveries", fp_->stagnation_max_recoveries_, 2);
++
++  // T1S2A FSM sliding stagnation recovery: sensitive intervention smoke.
++  nh.param("fsm/sliding_recovery_enabled", fp_->sliding_recovery_enabled_, false);
++  nh.param("fsm/sliding_recovery_window", fp_->sliding_recovery_window_, 20.0);
++  nh.param("fsm/sliding_recovery_displacement", fp_->sliding_recovery_displacement_, 0.8);
++  nh.param("fsm/sliding_recovery_mean_speed", fp_->sliding_recovery_mean_speed_, 0.12);
++  nh.param("fsm/sliding_recovery_cooldown", fp_->sliding_recovery_cooldown_, 45.0);
++  nh.param("fsm/sliding_recovery_max_count", fp_->sliding_recovery_max_count_, 2);
++  nh.param("fsm/sliding_recovery_current_speed", fp_->sliding_recovery_current_speed_, 0.25);
++  nh.param("fsm/sliding_recovery_good_evals_required", fp_->sliding_recovery_good_evals_required_, 3);
++
+   /* Initialize main modules */
+   expl_manager_.reset(new FastExplorationManager);
+   expl_manager_->initialize(nh);
+@@ -49,6 +67,13 @@ void FastExplorationFSM::init(ros::NodeHandle& nh) {
+   fd_->trigger_ = false;
+   fd_->avoid_collision_ = false;
+   fd_->go_back_ = false;
++  fd_->stagnation_recovery_initialized_ = false;
++  fd_->stagnation_recovery_count_ = 0;
++  fd_->sliding_recovery_count_ = 0;
++  fd_->sliding_recovery_good_evals_ = 0;
++  fd_->sliding_recovery_pending_ = false;
++  fd_->sliding_recovery_last_time_ = ros::Time(0);
++  fd_->sliding_recovery_samples_.clear();
+ 
+   /* Ros sub, pub and timer */
+   exec_timer_ = nh.createTimer(ros::Duration(0.01), &FastExplorationFSM::FSMCallback, this);
+@@ -175,6 +200,7 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
+         transitState(PUB_TRAJ, "FSM");
+       } else if (res == FAIL) {  // Keep trying to replan
+         fd_->static_state_ = true;
++        expl_manager_->notePlannerPlanFail("plan_fail");
+         ROS_WARN("Plan fail");
+       } else if (res == NO_GRID) {
+         fd_->static_state_ = true;
+@@ -214,10 +240,12 @@ void FastExplorationFSM::FSMCallback(const ros::TimerEvent& e) {
+         bool need_replan = false;
+         if (t_cur > fp_->replan_thresh2_ && expl_manager_->frontier_finder_->isFrontierCovered()) {
+           ROS_WARN("Replan: cluster covered=====================================");
++          expl_manager_->noteIdleReplan(+1);
+           need_replan = true;
+         } else if (info->duration_ - t_cur < fp_->replan_thresh1_) {
+           // Replan if traj is almost fully executed
+           ROS_WARN("Replan: traj fully executed=================================");
++          expl_manager_->noteIdleReplan(-1);
+           need_replan = true;
+         } else if (t_cur > fp_->replan_thresh3_) {
+           // Replan after some time
+@@ -617,22 +645,98 @@ void FastExplorationFSM::triggerCallback(const geometry_msgs::PoseStampedConstPt
+ }
+ 
+ void FastExplorationFSM::safetyCallback(const ros::TimerEvent& e) {
+-  if (state_ == EXPL_STATE::EXEC_TRAJ) {
+-    // Check safety and trigger replan if necessary
+-    double dist;
+-    bool safe = planner_manager_->checkTrajCollision(dist);
+-    if (!safe) {
+-      ROS_WARN("Replan: collision detected==================================");
+-      fd_->avoid_collision_ = true;
+-      transitState(PLAN_TRAJ, "safetyCallback");
++  const ros::Time now = ros::Time::now();
++  const bool active = state_ != EXPL_STATE::WAIT_TRIGGER &&
++                      state_ != EXPL_STATE::FINISH;
++  if (!active) {
++    fd_->sliding_recovery_samples_.clear();
++    fd_->sliding_recovery_good_evals_ = 0;
++    fd_->sliding_recovery_pending_ = false;
++    return;
++  }
++
++  // T1S2C cross-state detector: keep the odom window across planner states.
++  FSMData::StagnationSample sample;
++  sample.t = now;
++  sample.pos = fd_->odom_pos_;
++  sample.speed = fd_->odom_vel_.norm();
++  fd_->sliding_recovery_samples_.push_back(sample);
++  while (!fd_->sliding_recovery_samples_.empty() &&
++         (now - fd_->sliding_recovery_samples_.front().t).toSec() >
++             fp_->sliding_recovery_window_) {
++    fd_->sliding_recovery_samples_.pop_front();
++  }
++
++  double displacement = 0.0;
++  double mean_speed = 0.0;
++  bool ready = false;
++  if (fd_->sliding_recovery_samples_.size() >= 2) {
++    const auto& first = fd_->sliding_recovery_samples_.front();
++    const double elapsed = (now - first.t).toSec();
++    displacement = (fd_->odom_pos_ - first.pos).norm();
++    for (const auto& item : fd_->sliding_recovery_samples_) {
++      mean_speed += item.speed;
++    }
++    mean_speed /= double(fd_->sliding_recovery_samples_.size());
++    ready = elapsed >= fp_->sliding_recovery_window_ - 0.2;
++    const bool good = ready &&
++        displacement <= fp_->sliding_recovery_displacement_ &&
++        mean_speed <= fp_->sliding_recovery_mean_speed_ &&
++        sample.speed <= fp_->sliding_recovery_current_speed_;
++    if (good) {
++      fd_->sliding_recovery_good_evals_ += 1;
++    } else if (ready) {
++      fd_->sliding_recovery_good_evals_ = 0;
+     }
++    ROS_WARN_STREAM_THROTTLE(5.0,
++        "T1S2C eval state=" << int(state_)
++        << " n=" << fd_->sliding_recovery_samples_.size()
++        << " ready=" << ready << " disp=" << displacement
++        << " mean_speed=" << mean_speed
++        << " good=" << fd_->sliding_recovery_good_evals_
++        << " pending=" << fd_->sliding_recovery_pending_);
+   }
++
++  const double cooldown = (now - fd_->sliding_recovery_last_time_).toSec();
++  if (fp_->sliding_recovery_enabled_ &&
++      fd_->sliding_recovery_count_ < fp_->sliding_recovery_max_count_ &&
++      fd_->sliding_recovery_good_evals_ >= fp_->sliding_recovery_good_evals_required_ &&
++      cooldown >= fp_->sliding_recovery_cooldown_) {
++    fd_->sliding_recovery_pending_ = true;
++  }
++
++  // Collision checking and recovery execution remain restricted to EXEC_TRAJ.
++  if (state_ != EXPL_STATE::EXEC_TRAJ) return;
++  double dist;
++  if (!planner_manager_->checkTrajCollision(dist)) {
++    ROS_WARN("Replan: collision detected==================================");
++    fd_->avoid_collision_ = true;
++    transitState(PLAN_TRAJ, "safetyCallback");
++    return;
++  }
++  if (!fd_->sliding_recovery_pending_) return;
++  expl_manager_->notifyFsmRecoveryTrigger(fd_->sliding_recovery_count_ + 1, fd_->odom_pos_);
++  ROS_WARN_STREAM("T1S4R FSM-2 trigger count=" << (fd_->sliding_recovery_count_ + 1)
++                  << " displacement="
++                  << displacement << " mean_speed=" << mean_speed
++                  << " count=" << fd_->sliding_recovery_count_);
++  fd_->static_state_ = true;
++  fd_->avoid_collision_ = false;
++  fd_->sliding_recovery_count_ += 1;
++  fd_->sliding_recovery_last_time_ = now;
++  fd_->sliding_recovery_good_evals_ = 0;
++  fd_->sliding_recovery_pending_ = false;
++  fd_->sliding_recovery_samples_.clear();
++  replan_pub_.publish(std_msgs::Empty());
++  transitState(PLAN_TRAJ, "slidingRecoveryT1S2C");
+ }
+ 
+ void FastExplorationFSM::odometryCallback(const nav_msgs::OdometryConstPtr& msg) {
+   fd_->odom_pos_(0) = msg->pose.pose.position.x;
+   fd_->odom_pos_(1) = msg->pose.pose.position.y;
+   fd_->odom_pos_(2) = msg->pose.pose.position.z;
++  planner_manager_->setOdomPos(fd_->odom_pos_);
++  planner_manager_->setOdomPos(fd_->odom_pos_);
+ 
+   fd_->odom_vel_(0) = msg->twist.twist.linear.x;
+   fd_->odom_vel_(1) = msg->twist.twist.linear.y;
+diff --git a/swarm_exploration/exploration_manager/src/fast_exploration_manager.cpp b/swarm_exploration/exploration_manager/src/fast_exploration_manager.cpp
+index c863eae..4ca7eb6 100644
+--- a/swarm_exploration/exploration_manager/src/fast_exploration_manager.cpp
++++ b/swarm_exploration/exploration_manager/src/fast_exploration_manager.cpp
+@@ -1,8 +1,14 @@
+ // #include <fstream>
++#include <map>
++// T1S4R trigger modes candidate_direct cluster_fsm
+ #include <exploration_manager/fast_exploration_manager.h>
+ #include <thread>
++#include <algorithm>
+ #include <iostream>
+ #include <fstream>
++#include <limits>
++#include <cstdlib>
++#include <sstream>
+ #include <active_perception/graph_node.h>
+ #include <active_perception/graph_search.h>
+ #include <active_perception/perception_utils.h>
+@@ -23,6 +29,7 @@
+ #include <pcl/point_cloud.h>
+ #include <pcl/point_types.h>
+ #include <visualization_msgs/Marker.h>
++#include <std_msgs/String.h>
+ 
+ using namespace Eigen;
+ 
+@@ -64,6 +71,124 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
+   nh.param("exploration/drone_id", ep_->drone_id_, 1);
+   nh.param("exploration/init_plan_num", ep_->init_plan_num_, 2);
+ 
++  nh.param("failure_memory/enabled", failure_memory_enabled_, true);
++  nh.param("failure_memory/enforce", failure_memory_enforce_, false);
++  nh.param("failure_memory/enforce_low_speed_only", failure_memory_enforce_low_speed_only_, false);
++  nh.param("failure_memory/hard_prune", failure_memory_hard_prune_, true);
++  nh.param("failure_memory/shadow", failure_memory_shadow_, false);
++  nh.param("failure_memory/local_enforce", failure_memory_local_enforce_, false);
++  nh.param("failure_memory/frontier_soft_enforce", failure_memory_frontier_soft_enforce_, false);
++  nh.param("failure_memory/frontier_max_fraction", failure_frontier_max_fraction_, 0.67);
++  nh.param("failure_memory/frontier_penalty_ratio", failure_frontier_penalty_ratio_, 0.25);
++  nh.param("failure_memory/region_size_m", failure_region_size_m_, 1.0);
++  nh.param("failure_memory/cooldown_sec", failure_cooldown_sec_, 25.0);
++  nh.param("failure_memory/blacklist_threshold", failure_blacklist_threshold_, 3);
++  nh.param("failure_memory/blacklist_sec", failure_blacklist_sec_, 90.0);
++  nh.param("failure_memory/forget_sec", failure_forget_sec_, 180.0);
++  nh.param("failure_memory/cost_penalty", failure_cost_penalty_, 5000.0);
++  nh.param("failure_memory/kino_scale", failure_kino_scale_, 0.25);
++  nh.param("failure_memory/clearance_protect_m", failure_clearance_protect_m_, 0.8);
++  nh.param("failure_memory/protected_scale", failure_protected_scale_, 0.25);
++  nh.param("failure_memory/approach_cos", failure_approach_cos_, 0.5);
++  all_frontiers_suppressed_ = false;
++  nh.param("planner_escape/shadow", planner_escape_shadow_, false);
++  nh.param("planner_escape/enabled", planner_escape_enabled_, false);
++  nh.param("planner_escape/fusion_enabled", planner_escape_fusion_enabled_, false);
++  nh.param("planner_escape/consecutive_fail_threshold", planner_escape_fail_threshold_, 5);
++  nh.param("planner_escape/repeat_fraction_threshold", planner_escape_repeat_threshold_, 0.28);
++  nh.param("planner_escape/max_escape_count", planner_escape_max_count_, 1);
++  nh.param("planner_escape/cooldown_sec", planner_escape_cooldown_sec_, 45.0);
++  nh.param("planner_escape/urgent_cooldown_sec", planner_escape_urgent_cooldown_sec_, planner_escape_cooldown_sec_);
++  nh.param("planner_escape/fail_window_sec", planner_escape_fail_window_sec_, 12.0);
++  nh.param("planner_escape/repeat_frontier_soft_enforce", repeat_frontier_soft_enforce_, false);
++  nh.param("planner_escape/repeat_frontier_threshold", repeat_frontier_threshold_, 8);
++  nh.param("planner_escape/repeat_frontier_strong_threshold", repeat_frontier_strong_threshold_, 12);
++  nh.param("planner_escape/repeat_frontier_penalty_ratio", repeat_frontier_penalty_ratio_, 0.15);
++  nh.param("planner_escape/repeat_frontier_max_fraction", repeat_frontier_max_fraction_, 0.67);
++  nh.param("planner_escape/repeat_frontier_low_gain_threshold", repeat_frontier_low_gain_threshold_, 2.0);
++  nh.param("planner_escape/repeat_frontier_cooldown_sec", repeat_frontier_cooldown_sec_, 35.0);
++  nh.param("planner_escape/repeat_frontier_max_penalty_ratio", repeat_frontier_max_penalty_ratio_, 0.30);
++  nh.param("planner_escape/gain_rank_enforce", gain_rank_enforce_, false);
++  nh.param("planner_escape/gain_rank_gain_weight", gain_rank_gain_weight_, 0.06);
++  nh.param("planner_escape/gain_rank_gain_cap", gain_rank_gain_cap_, 20.0);
++  nh.param("planner_escape/gain_rank_bonus_ratio", gain_rank_bonus_ratio_, 0.18);
++  nh.param("planner_escape/gain_rank_low_gain_threshold", gain_rank_low_gain_threshold_, 2.0);
++  nh.param("planner_escape/gain_rank_low_gain_penalty_ratio", gain_rank_low_gain_penalty_ratio_, 0.08);
++  nh.param("planner_escape/gain_rank_max_fraction", gain_rank_max_fraction_, 0.75);
++  nh.param("planner_escape/cluster_suppress_sec", planner_escape_suppress_sec_, 30.0);
++  nh.param("planner_escape/topology_bonus", planner_escape_topology_bonus_, 0.15);
++  nh.param("planner_escape/cluster_radius_m", planner_escape_cluster_radius_m_, 2.5);
++  nh.param("planner_escape/v2_enabled", planner_escape_v2_enabled_, false);
++  nh.param("planner_escape/v2_clear_radius_m", planner_escape_v2_clear_radius_m_, 6.0);
++  nh.param("planner_escape/v2_min_step_m", planner_escape_v2_min_step_m_, 3.0);
++  nh.param("planner_escape/v2_max_step_m", planner_escape_v2_max_step_m_, 8.0);
++  nh.param("planner_escape/v2_ttl_sec", planner_escape_v2_ttl_sec_, 90.0);
++  nh.param("planner_escape/v2_min_clearance_m", planner_escape_v2_min_clearance_m_, 0.35);
++  nh.param("planner_escape/v2_memory_ttl_sec", planner_escape_v2_memory_ttl_sec_, 180.0);
++  nh.param("planner_escape/v2_max_cost", planner_escape_v2_max_cost_, 2500.0);
++  nh.param("planner_escape/v2_fallback_enabled", planner_escape_v2_fallback_enabled_, true);
++  nh.param("planner_escape/v2_trigger_on_planner_fail", planner_escape_v2_trigger_on_planner_fail_, true);
++  nh.param("planner_escape/v2_target_repeat_threshold", planner_escape_v2_target_repeat_threshold_, 8);
++  nh.param("planner_escape/v2_sticky_center", planner_escape_v2_sticky_center_, false);
++  nh.param("planner_escape/v2_failed_target_memory", planner_escape_v2_failed_target_memory_, false);
++  nh.param("planner_escape/v2_failed_target_radius_m", planner_escape_v2_failed_target_radius_m_, 0.8);
++  nh.param("planner_escape/v2_boundary_guard_enabled", planner_escape_v2_boundary_guard_enabled_, false);
++  nh.param("planner_escape/v2_boundary_margin_xy_m", planner_escape_v2_boundary_margin_xy_m_, 0.0);
++  nh.param("planner_escape/v2_postplan_guard_enabled", planner_escape_v2_postplan_guard_enabled_, false);
++  nh.param("planner_escape/v2_postplan_dt_sec", planner_escape_v2_postplan_dt_sec_, 0.05);
++  nh.param("planner_escape/v2_progress_guard_enabled", planner_escape_v2_progress_guard_enabled_, false);
++  nh.param("planner_escape/v2_progress_horizon_sec", planner_escape_v2_progress_horizon_sec_, 1.6);
++  nh.param("planner_escape/v2_min_progress_xy_m", planner_escape_v2_min_progress_xy_m_, 0.25);
++  nh.param("trajectory_safety/global_postplan_guard_enabled",
++      trajectory_safety_global_postplan_guard_enabled_, false);
++  nh.param("trajectory_safety/reject_unknown", trajectory_safety_reject_unknown_, false);
++  nh.param("trajectory_safety/boundary_margin_xy_m",
++      trajectory_safety_boundary_margin_xy_m_, 0.50);
++  nh.param("trajectory_safety/extra_clearance_m",
++      trajectory_safety_extra_clearance_m_, 0.10);
++  nh.param("trajectory_safety/dt_sec", trajectory_safety_dt_sec_, 0.05);
++  planner_escape_v2_active_ = false;
++  planner_escape_v2_until_ = ros::Time(0);
++  planner_escape_v2_center_.setZero();
++  planner_escape_v2_goal_.setZero();
++  planner_last_fail_origin_.setZero();
++  planner_escape_v2_goal_overridden_ = false;
++  planner_last_fail_origin_valid_ = false;
++  planner_last_detailed_fail_time_ = ros::Time(0);
++  planner_escape_v2_failed_targets_.clear();
++  shadow_candidate_active_ = false;
++  fusion_escape_armed_ = false;
++  low_speed_escape_requested_ = false;
++  low_speed_escape_urgent_ = false;
++  fsm_recovery_triggers_ = 0;
++  nh.param("planner_escape/fusion_match_mode", fusion_match_mode_, std::string("legacy"));
++  nh.param("planner_escape/fusion_match_window_sec", fusion_match_window_sec_, 30.0);
++  nh.param("planner_escape/require_low_motion", fusion_require_low_motion_, false);
++  nh.param("planner_escape/trigger_mode", planner_escape_trigger_mode_, std::string("legacy"));
++  nh.param("planner_escape/startup_guard_sec", planner_escape_startup_guard_sec_, 40.0);
++  planner_last_candidate_time_ = ros::Time(0);
++  fsm_last_trigger_time_ = ros::Time(0);
++  fsm_last_trigger_pos_.setZero();
++  low_speed_escape_request_time_ = ros::Time(0);
++  low_speed_escape_request_pos_.setZero();
++  low_speed_escape_request_id_ = 0;
++  planner_consecutive_failures_ = 0;
++  planner_fail_window_count_ = 0;
++  planner_escape_count_ = 0;
++  nh.param("planner_escape/idle_enabled", planner_escape_idle_enabled_, false);
++  nh.param("planner_escape/idle_window_sec", planner_escape_idle_window_sec_, 30.0);
++  nh.param("planner_escape/idle_net_threshold", planner_escape_idle_net_threshold_, 22.0);
++  nh.param("planner_escape/idle_skip_sec", planner_escape_idle_skip_sec_, 40.0);
++  idle_net_ = 0;
++  idle_events_.clear();
++  idle_origin_ = ros::Time::now();  // T1S4R candidate startup clock initialized
++  idle_origin_set_ = true;
++  planner_shadow_candidate_count_ = 0;
++  planner_escape_last_time_ = ros::Time(0);
++  planner_suppress_until_ = ros::Time(0);
++  planner_suppressed_center_.setZero();
++  planner_last_fail_pos_.setZero();
++
+   ed_->swarm_state_.resize(ep_->drone_num_);
+   ed_->pair_opt_stamps_.resize(ep_->drone_num_);
+   ed_->pair_opt_res_stamps_.resize(ep_->drone_num_);
+@@ -98,6 +223,21 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
+       nh.serviceClient<lkh_mtsp_solver::SolveMTSP>("/solve_tsp_" + to_string(ep_->drone_id_), true);
+   acvrp_client_ = nh.serviceClient<lkh_mtsp_solver::SolveMTSP>(
+       "/solve_acvrp_" + to_string(ep_->drone_id_), true);
++  target_context_pub_ = nh.advertise<std_msgs::String>(
++      "/t1s4/target_context_" + to_string(ep_->drone_id_), 10);
++  nh.param("planner_escape/low_speed_topic", low_speed_escape_topic_,
++      std::string("/planning/low_speed_escape_") + to_string(ep_->drone_id_));
++  low_speed_escape_sub_ = nh.subscribe<std_msgs::String>(
++      low_speed_escape_topic_, 10,
++      &FastExplorationManager::noteLowSpeedEscapeRequest, this);
++  ROS_WARN_STREAM("T1S4R low_speed_escape topic=" << low_speed_escape_topic_);
++  last_frontier_context_time_ = ros::Time::now();
++  target_context_episode_id_ = 0;
++  target_repeat_counts_.clear();
++  repeat_frontier_blocked_until_.clear();
++  last_context_target_id_ = -1;
++  last_context_cluster_id_ = 0;
++  context_state_initialized_ = false;
+ 
+   // Swarm
+   for (auto& state : ed_->swarm_state_) {
+@@ -119,6 +259,7 @@ void FastExplorationManager::initialize(ros::NodeHandle& nh) {
+ 
+ int FastExplorationManager::planExploreMotion(
+     const Vector3d& pos, const Vector3d& vel, const Vector3d& acc, const Vector3d& yaw) {
++  refreshFailureMemory();
+   ros::Time t1 = ros::Time::now();
+   auto t2 = t1;
+ 
+@@ -136,6 +277,10 @@ int FastExplorationManager::planExploreMotion(
+   // findGlobalTour(pos, vel, yaw, indices);
+   findGridAndFrontierPath(pos, vel, yaw, grid_ids, frontier_ids);
+ 
++  if (all_frontiers_suppressed_) {
++    return NO_GRID;
++  }
++
+   if (grid_ids.empty()) {
+ 
+     return NO_GRID;
+@@ -197,16 +342,65 @@ int FastExplorationManager::planExploreMotion(
+ 
+       if (grid_ids.size() <= 1) {
+         // Only one grid is assigned
+-        double min_cost = 100000;
+-        int min_cost_id = -1;
++        vector<double> base_costs;
+         vector<Vector3d> tmp_path;
+         for (int i = 0; i < ed_->n_points_[0].size(); ++i) {
+-          auto tmp_cost = ViewNode::computeCost(
+-              pos, ed_->n_points_[0][i], yaw[0], n_yaws[0][i], vel, yaw[1], tmp_path);
+-          if (tmp_cost < min_cost) {
+-            min_cost = tmp_cost;
+-            min_cost_id = i;
++          base_costs.push_back(ViewNode::computeCost(
++              pos, ed_->n_points_[0][i], yaw[0], n_yaws[0][i], vel, yaw[1], tmp_path));
++        }
++        const auto base_best_it = std::min_element(base_costs.begin(), base_costs.end());
++        int base_best_id = std::distance(base_costs.begin(), base_best_it);
++        int min_cost_id = base_best_id;
++
++        if (failure_memory_enabled_ && failure_memory_enforce_ && base_costs.size() >= 2) {
++          vector<double> finite_costs;
++          for (const auto cost : base_costs)
++            if (std::isfinite(cost) && cost > 0.0 && cost < 10000.0)
++              finite_costs.push_back(cost);
++          double cost_median = 0.0;
++          if (!finite_costs.empty()) {
++            const size_t mid = finite_costs.size() / 2;
++            std::nth_element(finite_costs.begin(), finite_costs.begin() + mid, finite_costs.end());
++            cost_median = finite_costs[mid];
++          }
++
++          vector<double> penalties(base_costs.size(), 0.0);
++          int penalized = 0;
++          double max_ratio = 0.0;
++          for (int i = 0; i < ed_->n_points_[0].size(); ++i) {
++            const auto& point = ed_->n_points_[0][i];
++            const double multiplier = failureMemoryPenalty(pos, point);
++            const double clearance = sdf_map_->getDistance(point);
++            const double protect =
++                clearance < failure_clearance_protect_m_ ? failure_protected_scale_ : 1.0;
++            penalties[i] = std::min(0.5 * base_costs[i],
++                failure_cost_penalty_ * cost_median * multiplier * protect);
++            if (penalties[i] > 0.0) {
++              penalized++;
++              max_ratio = std::max(max_ratio, penalties[i] / std::max(base_costs[i], 1e-3));
++            }
++          }
++          // If memory covers every alternative, preserve the original optimum as a safe fallback.
++          const bool fallback = penalized == static_cast<int>(base_costs.size());
++          if (fallback) {
++            penalties[base_best_id] = 0.0;
++            penalized--;
+           }
++          double min_cost = std::numeric_limits<double>::infinity();
++          for (int i = 0; i < base_costs.size(); ++i) {
++            const double adjusted_cost = base_costs[i] + penalties[i];
++            if (adjusted_cost < min_cost) {
++              min_cost = adjusted_cost;
++              min_cost_id = i;
++            }
++          }
++          ROS_INFO(
++              "S3F viewpoint_summary candidates=%zu penalized=%d fraction=%.3f "
++              "base_best=%d selected=%d changed=%d median=%.3f max_ratio=%.3f fallback=%d",
++              base_costs.size(), penalized,
++              static_cast<double>(penalized) / static_cast<double>(base_costs.size()),
++              base_best_id, min_cost_id, base_best_id != min_cost_id ? 1 : 0, cost_median,
++              max_ratio, fallback ? 1 : 0);
+         }
+         next_pos = ed_->n_points_[0][min_cost_id];
+         next_yaw = n_yaws[0][min_cost_id];
+@@ -281,6 +475,179 @@ int FastExplorationManager::planExploreMotion(
+     ROS_INFO("Local refine time: %lf", local_time);
+   }
+ 
++  const int selected_target_id = frontier_ids.empty() ? -1 : frontier_ids.front();
++
++  planner_escape_v2_goal_overridden_ = false;
++  if (planner_escape_v2_enabled_ && planner_escape_v2_active_) {
++    const ros::Time now = ros::Time::now();
++    const double now_sec = now.toSec();
++    planner_escape_v2_failed_targets_.erase(
++        std::remove_if(planner_escape_v2_failed_targets_.begin(),
++            planner_escape_v2_failed_targets_.end(),
++            [now_sec](const std::pair<Vector3d, double>& item) {
++              return item.second <= now_sec;
++            }),
++        planner_escape_v2_failed_targets_.end());
++    const auto v2_target_failed = [this](const Vector3d& cand) {
++      if (!planner_escape_v2_failed_target_memory_) return false;
++      for (const auto& item : planner_escape_v2_failed_targets_) {
++        if ((item.first.head<2>() - cand.head<2>()).norm() <=
++            planner_escape_v2_failed_target_radius_m_) return true;
++      }
++      return false;
++    };
++    Vector3d v2_box_min, v2_box_max;
++    sdf_map_->getBox(v2_box_min, v2_box_max);
++    const auto v2_inside_body_bounds = [this, &v2_box_min, &v2_box_max](const Vector3d& p) {
++      // Physical map bounds always apply. The optional switch adds only the
++      // conservative XY body margin that previously reduced candidate coverage.
++      const double m = planner_escape_v2_boundary_guard_enabled_ ?
++          std::max(0.0, planner_escape_v2_boundary_margin_xy_m_) : 0.0;
++      constexpr double z_eps = 1e-3;
++      return p.allFinite() && p.x() >= v2_box_min.x() + m && p.x() <= v2_box_max.x() - m &&
++          p.y() >= v2_box_min.y() + m && p.y() <= v2_box_max.y() - m &&
++          p.z() >= v2_box_min.z() - z_eps && p.z() <= v2_box_max.z() + z_eps;
++    };
++    const auto v2_reachable_candidate = [this, &pos](
++        const Vector3d& cand, double& path_cost, vector<Vector3d>& path) {
++      planner_manager_->path_finder_->reset();
++      const bool optimistic = ed_->plan_num_ < ep_->init_plan_num_;
++      if (planner_manager_->path_finder_->search(pos, cand, optimistic) != Astar::REACH_END)
++        return false;
++      path = planner_manager_->path_finder_->getPath();
++      path_cost = Astar::pathLength(path);
++      return std::isfinite(path_cost) && path_cost > 0.0;
++    };  // LE8F reachable_candidate: never accept ViewNode's no-path sentinel cost.
++    if (now > planner_escape_v2_until_) {
++      planner_escape_v2_active_ = false;
++      ROS_WARN("T1S4R v2_escape switch_back ttl_expired");
++    } else {
++      const double cur_dist = (pos.head<2>() - planner_escape_v2_center_.head<2>()).norm();
++      const double target_dist = (next_pos.head<2>() - planner_escape_v2_center_.head<2>()).norm();
++      const bool repeated_target = selected_target_id >= 0 &&
++          target_repeat_counts_[selected_target_id] >= planner_escape_v2_target_repeat_threshold_;
++      const bool near_escape_center = cur_dist < planner_escape_v2_clear_radius_m_;
++      const bool target_near_escape_center = target_dist < planner_escape_v2_clear_radius_m_;
++      const int effective_fail_count =
++          std::max(planner_consecutive_failures_, planner_fail_window_count_);
++      const bool fail_streak_near_center =
++          near_escape_center && effective_fail_count >= planner_escape_fail_threshold_;
++      const bool repeated_target_near_center = near_escape_center && repeated_target;
++      const bool should_override =
++          target_near_escape_center || fail_streak_near_center || repeated_target_near_center;
++      if (!near_escape_center && !target_near_escape_center) {
++        planner_escape_v2_active_ = false;
++        if (planner_consecutive_failures_ >= planner_escape_fail_threshold_) planner_consecutive_failures_ = 0;
++        ROS_WARN_STREAM("T1S4R v2_escape switch_back clear cur_dist=" << cur_dist
++                        << " target_dist=" << target_dist << " stale_fail_reset=1");
++      } else if (should_override) {
++        Vector3d best = next_pos;
++        double best_score = -std::numeric_limits<double>::infinity();
++        vector<Vector3d> tmp_path;
++        for (const auto& cand : ed_->points_) {
++          if (!cand.allFinite()) continue;
++          if (!v2_inside_body_bounds(cand)) continue;
++          if (v2_target_failed(cand)) continue;
++          const double away = (cand.head<2>() - planner_escape_v2_center_.head<2>()).norm();
++          const double step = (cand.head<2>() - pos.head<2>()).norm();
++          if (away < planner_escape_v2_clear_radius_m_) continue;
++          if (step < planner_escape_v2_min_step_m_) continue;
++          if (step > planner_escape_v2_max_step_m_) continue;
++          const double clearance = sdf_map_->getDistance(cand);
++          if (clearance < planner_escape_v2_min_clearance_m_) continue;
++          double cost = 0.0;
++          if (!v2_reachable_candidate(cand, cost, tmp_path) ||
++              cost > planner_escape_v2_max_cost_) continue;
++          const double score = 2.0 * away + 0.35 * step + 2.0 * clearance - 0.02 * cost;
++          if (score > best_score) {
++            best_score = score;
++            best = cand;
++          }
++        }
++        if (best_score == -std::numeric_limits<double>::infinity() &&
++            planner_escape_v2_fallback_enabled_ && (near_escape_center || target_near_escape_center)) {
++          vector<Vector3d> dirs;
++          Vector3d radial = pos - planner_escape_v2_center_;
++          radial.z() = 0.0;
++          if (radial.head<2>().norm() > 1e-3) {
++            radial.normalize();
++            dirs.push_back(radial);
++          }
++          const Vector3d heading(std::cos(yaw[0]), std::sin(yaw[0]), 0.0);
++          dirs.push_back(heading);
++          dirs.push_back(Vector3d(-heading.y(), heading.x(), 0.0));
++          dirs.push_back(Vector3d(heading.y(), -heading.x(), 0.0));
++          dirs.push_back(-heading);
++          // Heading-only directions can all point outward at a map corner.
++          // Add a deterministic full-circle sweep so inward diagonals are tested.
++          for (int k = 0; k < 16; ++k) {
++            const double angle = 2.0 * M_PI * static_cast<double>(k) / 16.0;
++            dirs.push_back(Vector3d(std::cos(angle), std::sin(angle), 0.0));
++          }
++          int fallback_tested = 0;
++          int fallback_reachable = 0;
++          for (const auto& raw_dir : dirs) {
++            Vector3d dir = raw_dir;
++            dir.z() = 0.0;
++            if (dir.head<2>().norm() < 1e-3) continue;
++            dir.normalize();
++            for (double step = planner_escape_v2_min_step_m_;
++                 step <= planner_escape_v2_max_step_m_ + 1e-6; step += 0.5) {
++              ++fallback_tested;
++              Vector3d cand = pos + step * dir;
++              cand.z() = pos.z();
++              if (!v2_inside_body_bounds(cand)) continue;
++              if (v2_target_failed(cand)) continue;
++              const double away = (cand.head<2>() - planner_escape_v2_center_.head<2>()).norm();
++              if (away < std::max(0.5 * planner_escape_v2_clear_radius_m_,
++                      planner_escape_v2_min_step_m_)) continue;
++              const double clearance = sdf_map_->getDistance(cand);
++              if (clearance < planner_escape_v2_min_clearance_m_) continue;
++              vector<Vector3d> tmp_path2;
++              double cost = 0.0;
++              if (!v2_reachable_candidate(cand, cost, tmp_path2) ||
++                  cost > planner_escape_v2_max_cost_) continue;
++              ++fallback_reachable;
++              const double score = 3.0 * away + 2.0 * clearance + 0.15 * step - 0.02 * cost;
++              if (score > best_score) {
++                best_score = score;
++                best = cand;
++              }
++            }
++          }
++          ROS_WARN_STREAM("LE8F v2_escape geometric_fallback tested=" << fallback_tested
++                          << " reachable=" << fallback_reachable
++                          << " directions=" << dirs.size()
++                          << " best_score=" << best_score
++                          << " cur_dist=" << cur_dist
++                          << " target_dist=" << target_dist);
++        }
++        if (best_score > -std::numeric_limits<double>::infinity()) {
++          const Vector3d old_next = next_pos;
++          next_pos = best;
++          next_yaw = atan2(next_pos.y() - pos.y(), next_pos.x() - pos.x());
++          planner_escape_v2_goal_ = next_pos;
++          planner_escape_v2_goal_overridden_ = true;
++          ROS_WARN_STREAM("T1S4R v2_escape virtual_target override old="
++                          << old_next.transpose() << " new=" << next_pos.transpose()
++                          << " center=" << planner_escape_v2_center_.transpose()
++                          << " cur_dist=" << cur_dist << " target_dist=" << target_dist
++                          << " near_center=" << near_escape_center
++                          << " repeated_target=" << repeated_target
++                          << " fail_streak=" << planner_consecutive_failures_
++                          << " fail_window=" << planner_fail_window_count_
++                          << " best_score=" << best_score);
++        } else {
++          ROS_WARN_STREAM("T1S4R v2_escape no_safe_virtual_target cur_dist=" << cur_dist
++                          << " target_dist=" << target_dist
++                          << " near_center=" << near_escape_center);
++        }
++      }
++    }
++  }
++
++  publishTargetContext(pos, vel, next_pos, next_yaw, selected_target_id, frontier_ids);
++
+   std::cout << "Next view: " << next_pos.transpose() << ", " << next_yaw << std::endl;
+   ed_->next_pos_ = next_pos;
+   ed_->next_yaw_ = next_yaw;
+@@ -288,6 +655,11 @@ int FastExplorationManager::planExploreMotion(
+   if (planTrajToView(pos, vel, acc, yaw, next_pos, next_yaw) == FAIL) {
+     return FAIL;
+   }
++  if (planner_consecutive_failures_ > 0) {
++    ROS_INFO_STREAM("T1S4R planner_fail consecutive_reset_on_success kept_window="
++                    << planner_fail_window_count_);
++    planner_consecutive_failures_ = 0;
++  }
+ 
+   double total = (ros::Time::now() - t2).toSec();
+   ROS_INFO("Total time: %lf", total);
+@@ -314,6 +686,8 @@ int FastExplorationManager::planTrajToView(const Vector3d& pos, const Vector3d&
+   planner_manager_->path_finder_->reset();
+   if (planner_manager_->path_finder_->search(pos, next_pos, optimistic) != Astar::REACH_END) {
+     ROS_ERROR("No path to next viewpoint");
++    recordViewpointFailure(pos, next_pos, "astar_no_path");
++    notePlannerPlanFail("astar_no_path");
+     return FAIL;
+   }
+   ed_->path_next_goal_ = planner_manager_->path_finder_->getPath();
+@@ -352,13 +726,116 @@ int FastExplorationManager::planTrajToView(const Vector3d& pos, const Vector3d&
+     ed_->next_goal_ = next_pos;
+ 
+     if (!planner_manager_->kinodynamicReplan(
+-            pos, vel, acc, ed_->next_goal_, Vector3d(0, 0, 0), time_lb))
++            pos, vel, acc, ed_->next_goal_, Vector3d(0, 0, 0), time_lb)) {
++      recordViewpointFailure(pos, next_pos, "kinodynamic_replan");
++      notePlannerPlanFail("kinodynamic_replan");
+       return FAIL;
++    }
+     ed_->kino_path_ = planner_manager_->kino_path_finder_->getKinoTraj(0.02);
+   }
+ 
+-  if (planner_manager_->local_data_.position_traj_.getTimeSum() < time_lb - 0.5)
+-    ROS_ERROR("Lower bound not satified!");
++  const double planned_duration = planner_manager_->local_data_.position_traj_.getTimeSum();
++  if (!std::isfinite(planned_duration) || planned_duration < 0.05) {
++    ROS_ERROR("T1S4R invalid_traj zero_duration duration=%lf time_lb=%lf", planned_duration, time_lb);
++    recordViewpointFailure(pos, next_pos, "invalid_traj");
++    notePlannerPlanFail("invalid_traj");
++    return FAIL;
++  }
++  if (planned_duration < time_lb - 0.5) {
++    ROS_ERROR("T1S4R invalid_traj lower_bound duration=%lf time_lb=%lf", planned_duration, time_lb);
++    recordViewpointFailure(pos, next_pos, "invalid_traj");
++    notePlannerPlanFail("invalid_traj");
++    return FAIL;
++  }
++  const bool run_v2_postplan_guard =
++      planner_escape_v2_postplan_guard_enabled_ && planner_escape_v2_goal_overridden_;
++  if (trajectory_safety_global_postplan_guard_enabled_ || run_v2_postplan_guard) {
++    Vector3d box_min, box_max;
++    sdf_map_->getBox(box_min, box_max);
++    const bool global_guard = trajectory_safety_global_postplan_guard_enabled_;
++    const double margin = std::max(0.0, global_guard ?
++        trajectory_safety_boundary_margin_xy_m_ : planner_escape_v2_boundary_margin_xy_m_);
++    const double dt = std::max(0.02, global_guard ?
++        trajectory_safety_dt_sec_ : planner_escape_v2_postplan_dt_sec_);
++    const double required_clearance = global_guard ?
++        std::max(0.0, trajectory_safety_extra_clearance_m_) : 0.0;
++    const double initial_clearance = sdf_map_->getDistance(pos);
++    const int initial_raw_occupancy = sdf_map_->getOccupancy(pos);
++    for (double t = 0.0; t <= planned_duration + 1e-6; t += dt) {
++      const Vector3d sample = planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
++          std::min(t, planned_duration));
++      constexpr double z_eps = 1e-3;
++      const bool in_bounds = sample.allFinite() &&
++          sample.x() >= box_min.x() + margin && sample.x() <= box_max.x() - margin &&
++          sample.y() >= box_min.y() + margin && sample.y() <= box_max.y() - margin &&
++          sample.z() >= box_min.z() - z_eps && sample.z() <= box_max.z() + z_eps;
++      const int inflate_occupancy = sdf_map_->getInflateOccupancy(sample);
++      const int raw_occupancy = sdf_map_->getOccupancy(sample);
++      const double clearance = sdf_map_->getDistance(sample);
++      const bool unknown_unsafe = global_guard && trajectory_safety_reject_unknown_ &&
++          raw_occupancy == SDFMap::UNKNOWN &&
++          !(t <= 0.10 && initial_raw_occupancy == SDFMap::UNKNOWN);
++      // If replanning starts inside the reserve band, allow a trajectory that
++      // monotonically increases clearance so the vehicle can leave safely.
++      const bool clearance_unsafe = global_guard && clearance + 1e-6 < required_clearance &&
++          (initial_clearance + 1e-6 >= required_clearance ||
++           clearance + 0.02 < initial_clearance);
++      if (!in_bounds || inflate_occupancy == 1 || unknown_unsafe || clearance_unsafe) {
++        const char* reject_reason = !in_bounds ? "boundary" :
++            (inflate_occupancy == 1 ? "inflated_occupancy" :
++             (unknown_unsafe ? "unknown" : "clearance"));
++        ROS_ERROR_STREAM("LE8H global_postplan_guard reject reason=" << reject_reason
++                         << " t=" << t << " sample=" << sample.transpose()
++                         << " in_bounds=" << in_bounds
++                         << " inflate_occupancy=" << inflate_occupancy
++                         << " raw_occupancy=" << raw_occupancy
++                         << " clearance=" << clearance
++                         << " required_clearance=" << required_clearance
++                         << " initial_clearance=" << initial_clearance
++                         << " margin_xy=" << margin
++                         << " overridden=" << planner_escape_v2_goal_overridden_);
++        const std::string failure_reason = planner_escape_v2_goal_overridden_ ?
++            "postplan_unsafe" : "postplan_global_unsafe";
++        recordViewpointFailure(pos, next_pos, failure_reason);
++        notePlannerPlanFail(failure_reason);
++        return FAIL;
++      }
++    }
++    ROS_INFO_STREAM("LE8H global_postplan_guard pass duration=" << planned_duration
++                    << " global=" << global_guard
++                    << " overridden=" << planner_escape_v2_goal_overridden_
++                    << " required_clearance=" << required_clearance
++                    << " margin_xy=" << margin);
++  }
++
++  if (planner_escape_v2_progress_guard_enabled_ &&
++      planner_escape_v2_goal_overridden_) {
++    const double horizon = std::min(planned_duration,
++        std::max(0.1, planner_escape_v2_progress_horizon_sec_));
++    const double dt = std::min(0.05, horizon);
++    double max_progress_xy = 0.0;
++    for (double t = 0.0; t <= horizon + 1e-6; t += dt) {
++      const Vector3d sample = planner_manager_->local_data_.position_traj_.evaluateDeBoorT(
++          std::min(t, horizon));
++      if (sample.allFinite()) {
++        max_progress_xy = std::max(max_progress_xy,
++            (sample.head<2>() - pos.head<2>()).norm());
++      }
++    }
++    if (max_progress_xy < planner_escape_v2_min_progress_xy_m_) {
++      ROS_ERROR_STREAM("LE8G v2_progress_guard reject horizon=" << horizon
++                       << " max_progress_xy=" << max_progress_xy
++                       << " required=" << planner_escape_v2_min_progress_xy_m_
++                       << " start=" << pos.transpose()
++                       << " target=" << next_pos.transpose());
++      recordViewpointFailure(pos, next_pos, "postplan_no_progress");
++      notePlannerPlanFail("postplan_no_progress");
++      return FAIL;
++    }
++    ROS_INFO_STREAM("LE8G v2_progress_guard pass horizon=" << horizon
++                    << " max_progress_xy=" << max_progress_xy
++                    << " required=" << planner_escape_v2_min_progress_xy_m_);
++  }
+ 
+   double traj_plan_time = (ros::Time::now() - t1).toSec();
+ 
+@@ -400,6 +877,8 @@ int FastExplorationManager::updateFrontierStruct(const Eigen::Vector3d& pos) {
+     return 0;
+   }
+ 
++  last_frontier_context_time_ = ros::Time::now();
++
+   double view_time = (ros::Time::now() - t1).toSec();
+ 
+   t1 = ros::Time::now();
+@@ -414,6 +893,83 @@ int FastExplorationManager::updateFrontierStruct(const Eigen::Vector3d& pos) {
+   return ed_->frontiers_.size();
+ }
+ 
++void FastExplorationManager::publishTargetContext(const Vector3d& cur_pos,
++    const Vector3d& cur_vel, const Vector3d& target_pos, double target_yaw,
++    int selected_target_id, const vector<int>& candidate_ids) {
++  if (!target_context_pub_) return;
++  unsigned long long candidate_hash = 1469598103934665603ULL;
++  for (const int id : candidate_ids) {
++    candidate_hash ^= static_cast<unsigned long long>(id + 1000003);
++    candidate_hash *= 1099511628211ULL;
++  }
++  unsigned long long cluster_id = 0;
++  if (selected_target_id >= 0 &&
++      selected_target_id < static_cast<int>(ed_->frontiers_.size())) {
++    const auto& cells = ed_->frontiers_[selected_target_id];
++    cluster_id = 1469598103934665603ULL ^ static_cast<unsigned long long>(cells.size());
++    for (const auto& cell : cells) {
++      const long long qx = static_cast<long long>(std::llround(cell.x() * 100.0));
++      const long long qy = static_cast<long long>(std::llround(cell.y() * 100.0));
++      const long long qz = static_cast<long long>(std::llround(cell.z() * 100.0));
++      unsigned long long cell_hash = static_cast<unsigned long long>(qx + 1000003);
++      cell_hash = (cell_hash * 1099511628211ULL) ^ static_cast<unsigned long long>(qy + 1000003);
++      cell_hash = (cell_hash * 1099511628211ULL) ^ static_cast<unsigned long long>(qz + 1000003);
++      // XOR aggregation makes the identity independent of the frontier-cell
++      // traversal order while retaining the quantized cluster geometry.
++      cluster_id ^= cell_hash;
++    }
++  }
++  if (!context_state_initialized_ ||
++      selected_target_id != last_context_target_id_ ||
++      cluster_id != last_context_cluster_id_) {
++    if (selected_target_id >= 0 && target_repeat_counts_.count(selected_target_id)) {
++      ++target_repeat_counts_[selected_target_id];
++    } else if (selected_target_id >= 0) {
++      target_repeat_counts_[selected_target_id] = 0;
++    }
++    ++target_context_episode_id_;
++    last_context_target_id_ = selected_target_id;
++    last_context_cluster_id_ = cluster_id;
++    context_state_initialized_ = true;
++  }
++  const double distance = (target_pos - cur_pos).norm();
++  const double speed = cur_vel.norm();
++  const double remaining = speed > 0.05 ? distance / speed
++                                         : std::numeric_limits<double>::quiet_NaN();
++  double coverage_gain = std::numeric_limits<double>::quiet_NaN();
++  if (selected_target_id >= 0) {
++    coverage_gain = static_cast<double>(frontier_finder_->computeGainOfView(target_pos, target_yaw));
++  }
++  const double freshness = (ros::Time::now() - last_frontier_context_time_).toSec();
++  const int repeat = selected_target_id >= 0 ? target_repeat_counts_[selected_target_id] : 0;
++  std::ostringstream out;
++  out << "{\"sim_time\":" << ros::Time::now().toSec()
++      << ",\"selected_target_id\":" << selected_target_id
++      << ",\"target_distance\":" << distance
++      << ",\"target_freshness\":" << freshness
++      << ",\"target_remaining_time\":";
++  if (std::isfinite(remaining)) out << remaining;
++  else out << "null";
++  out
++      << ",\"candidate_set_hash\":\"" << candidate_hash << "\""
++      << ",\"candidate_set_ids\":[";
++  for (size_t i = 0; i < candidate_ids.size(); ++i) {
++    if (i) out << ",";
++    out << candidate_ids[i];
++  }
++  out << "]"
++      << ",\"frontier_cluster_id\":" << cluster_id
++      << ",\"target_repeat_count\":" << repeat
++      << ",\"cluster_traj_episode_id\":\"" << target_context_episode_id_ << "\""
++      << ",\"coverage_gain\":";
++  if (std::isfinite(coverage_gain)) out << coverage_gain;
++  else out << "null";
++  out << "}";
++  std_msgs::String msg;
++  msg.data = out.str();
++  target_context_pub_.publish(msg);
++}
++
+ void FastExplorationManager::findGridAndFrontierPath(const Vector3d& cur_pos,
+     const Vector3d& cur_vel, const Vector3d& cur_yaw, vector<int>& grid_ids,
+     vector<int>& frontier_ids) {
+@@ -445,6 +1001,42 @@ void FastExplorationManager::findGridAndFrontierPath(const Vector3d& cur_pos,
+   hgrid_->getFrontiersInGrid(ego_ids, ftr_ids);
+   ROS_INFO("Find frontier tour, %d involved------------", ftr_ids.size());
+ 
++  all_frontiers_suppressed_ = false;
++  if (failure_memory_enabled_ && failure_memory_enforce_ && failure_memory_hard_prune_ &&
++      !ftr_ids.empty()) {
++    vector<int> available_ids;
++    available_ids.reserve(ftr_ids.size());
++    for (const int id : ftr_ids) {
++      if (id >= 0 && id < static_cast<int>(ed_->points_.size()) &&
++          failureMemoryBlacklisted(ed_->points_[id])) {
++        const auto& point = ed_->points_[id];
++        ROS_WARN("S3F blacklist_skip frontier=%d x=%.3f y=%.3f z=%.3f", id, point.x(),
++            point.y(), point.z());
++        continue;
++      }
++      available_ids.push_back(id);
++    }
++    if (available_ids.empty()) {
++      all_frontiers_suppressed_ = true;
++      ROS_WARN("S3F memory_pruned_no_path frontiers=%zu", ftr_ids.size());
++      frontier_ids.clear();
++      return;
++    }
++    ftr_ids.swap(available_ids);
++  } else if (failure_memory_enabled_ && failure_memory_enforce_ && !ftr_ids.empty()) {
++    int soft_kept = 0;
++    for (const int id : ftr_ids) {
++      if (id >= 0 && id < static_cast<int>(ed_->points_.size()) &&
++          failureMemoryBlacklisted(ed_->points_[id])) {
++        ++soft_kept;
++      }
++    }
++    if (soft_kept > 0) {
++      ROS_WARN("S3F blacklist_soft_keep frontiers=%zu matched=%d hard_prune=false",
++          ftr_ids.size(), soft_kept);
++    }
++  }
++
+   if (ftr_ids.empty()) {
+     frontier_ids = {};
+     return;
+@@ -458,6 +1050,7 @@ void FastExplorationManager::findGridAndFrontierPath(const Vector3d& cur_pos,
+     grid_pos_vec = { grid_pos };
+   }
+ 
++  maybeApplyPlannerEscape(ftr_ids, cur_pos);
+   findTourOfFrontier(cur_pos, cur_vel, cur_yaw, ftr_ids, grid_pos_vec, frontier_ids);
+   double ftr_time = (ros::Time::now() - t1).toSec();
+   ROS_INFO("Grid tour t: %lf, frontier tour t: %lf.", grid_time, ftr_time);
+@@ -590,11 +1183,13 @@ void FastExplorationManager::refineLocalTour(const Vector3d& cur_pos, const Vect
+   // Create graph for viewpoints selection
+   GraphSearch<ViewNode> g_search;
+   vector<ViewNode::Ptr> last_group, cur_group;
++  vector<ViewNode::Ptr> all_nodes, first_group;
+ 
+   // Add the current state
+   ViewNode::Ptr first(new ViewNode(cur_pos, cur_yaw[0]));
+   first->vel_ = cur_vel;
+   g_search.addNode(first);
++  all_nodes.push_back(first);
+   last_group.push_back(first);
+   ViewNode::Ptr final_node;
+ 
+@@ -605,6 +1200,8 @@ void FastExplorationManager::refineLocalTour(const Vector3d& cur_pos, const Vect
+     for (int j = 0; j < n_points[i].size(); ++j) {
+       ViewNode::Ptr node(new ViewNode(n_points[i][j], n_yaws[i][j]));
+       g_search.addNode(node);
++      all_nodes.push_back(node);
++      if (i == 0) first_group.push_back(node);
+       // Connect a node to nodes in last group
+       for (auto nd : last_group) g_search.addEdge(nd->id_, node->id_);
+       cur_group.push_back(node);
+@@ -627,14 +1224,84 @@ void FastExplorationManager::refineLocalTour(const Vector3d& cur_pos, const Vect
+   // Search optimal sequence
+   vector<ViewNode::Ptr> path;
+   g_search.DijkstraSearch(first->id_, final_node->id_, path);
++  vector<ViewNode::Ptr> executed_path = path;
++
++  if (failure_memory_enabled_ && (failure_memory_shadow_ || failure_memory_local_enforce_)) {
++    const double now = ros::Time::now().toSec();
++    int active_regions = 0;
++    for (const auto& region : failure_regions_)
++      if (now < region.blocked_until) active_regions++;
++
++    int base_first = path.size() > 1 ? path[1]->id_ : -1;
++    vector<double> base_costs, penalties(first_group.size(), 0.0);
++    for (const auto& node : first_group) base_costs.push_back(first->costTo(node));
++    vector<double> finite_costs;
++    for (const auto cost : base_costs)
++      if (std::isfinite(cost) && cost > 0.0 && cost < 10000.0)
++        finite_costs.push_back(cost);
++    double cost_median = 0.0;
++    if (!finite_costs.empty()) {
++      const size_t mid = finite_costs.size() / 2;
++      std::nth_element(finite_costs.begin(), finite_costs.begin() + mid, finite_costs.end());
++      cost_median = finite_costs[mid];
++    }
++
++    int matched = 0;
++    double max_ratio = 0.0;
++    for (int i = 0; i < first_group.size(); ++i) {
++      const auto& node = first_group[i];
++      const double multiplier = failureMemoryPenalty(cur_pos, node->pos_, nullptr, true);
++      const double clearance = sdf_map_->getDistance(node->pos_);
++      const double protect =
++          clearance < failure_clearance_protect_m_ ? failure_protected_scale_ : 1.0;
++      if (std::isfinite(base_costs[i]) && base_costs[i] > 0.0 && cost_median > 0.0)
++        penalties[i] = std::min(0.10 * base_costs[i],
++            failure_cost_penalty_ * cost_median * multiplier * protect);
++      if (penalties[i] > 0.0) {
++        matched++;
++        max_ratio = std::max(max_ratio, penalties[i] / std::max(base_costs[i], 1e-3));
++      }
++    }
++    const double matched_fraction = first_group.empty() ? 0.0 :
++        static_cast<double>(matched) / static_cast<double>(first_group.size());
++    const bool eligible = first_group.size() >= 2 && matched > 0 && base_first >= 0;
++    const bool guarded = eligible && matched_fraction <= 0.50;
++    if (!guarded)
++      std::fill(penalties.begin(), penalties.end(), 0.0);
++    for (int i = 0; i < first_group.size(); ++i) first_group[i]->extra_cost_ = penalties[i];
++    for (const auto& node : all_nodes) {
++      node->g_value_ = 1000000.0;
++      node->closed_ = false;
++      node->parent_ = nullptr;
++    }
++    vector<ViewNode::Ptr> shadow_path;
++    g_search.DijkstraSearch(first->id_, final_node->id_, shadow_path);
++    const int shadow_first = shadow_path.size() > 1 ? shadow_path[1]->id_ : -1;
++    const bool adjusted_valid = shadow_first >= 0;
++    const bool applied = failure_memory_local_enforce_ && guarded && adjusted_valid;
++    if (applied) executed_path = shadow_path;
++    const int actual_first = executed_path.size() > 1 ? executed_path[1]->id_ : -1;
++    const bool changed = base_first >= 0 && actual_first >= 0 && base_first != actual_first;
++    const bool fallback = failure_memory_local_enforce_ && eligible && !applied;
++    ROS_INFO(
++        "S3F local_guard_summary mode=%s groups=%zu first_candidates=%zu active_regions=%d "
++        "raw_matched=%d eligible=%d raw_fraction=%.3f guarded=%d applied=%d "
++        "base_first=%d adjusted_first=%d actual_first=%d changed=%d median=%.3f "
++        "max_ratio=%.3f fallback=%d",
++        failure_memory_local_enforce_ ? "guarded" : "baseline", n_points.size(),
++        first_group.size(), active_regions, matched, eligible ? 1 : 0, matched_fraction,
++        guarded ? 1 : 0, applied ? 1 : 0, base_first, shadow_first, actual_first,
++        changed ? 1 : 0, cost_median, max_ratio, fallback ? 1 : 0);
++    for (const auto& node : first_group) node->extra_cost_ = 0.0;
++  }
+ 
+   search_time = (ros::Time::now() - t1).toSec();
+   t1 = ros::Time::now();
+ 
+   // Return searched sequence
+-  for (int i = 1; i < path.size(); ++i) {
+-    refined_pts.push_back(path[i]->pos_);
+-    refined_yaws.push_back(path[i]->yaw_);
++  for (int i = 1; i < executed_path.size(); ++i) {
++    refined_pts.push_back(executed_path[i]->pos_);
++    refined_yaws.push_back(executed_path[i]->yaw_);
+   }
+ 
+   // Extract optimal local tour (for visualization)
+@@ -1042,6 +1709,9 @@ void FastExplorationManager::findTourOfFrontier(const Vector3d& cur_pos, const V
+   // frontier_finder_->getSwarmCostMatrix(positions, velocities, yaws, mat);
+   Eigen::MatrixXd mat;
+   frontier_finder_->getSwarmCostMatrix(positions, velocities, yaws, ftr_ids, grid_pos, mat);
++  applyFailureMemoryCosts(mat, ftr_ids, positions.size());
++  applyGainRankCosts(mat, ftr_ids, positions.size());
++  applyTargetRepeatCosts(mat, ftr_ids, positions.size());
+   const int dimension = mat.rows();
+   // std::cout << "dim of frontier TSP mat: " << dimension << std::endl;
+ 
+@@ -1170,4 +1840,772 @@ void FastExplorationManager::findTourOfFrontier(const Vector3d& cur_pos, const V
+   //     parse_time, indices.size());
+ }
+ 
++
++
++bool FastExplorationManager::fusionCollisionGuardOk() const {
++  if (!planner_manager_) return false;
++  double dist = 0.0;
++  return planner_manager_->checkTrajCollision(dist);
++}
++
++void FastExplorationManager::notifyFsmRecoveryTrigger(
++    int trigger_count, const Eigen::Vector3d& trigger_pos) {
++  fsm_recovery_triggers_ = trigger_count;
++  fsm_last_trigger_time_ = ros::Time::now();
++  fsm_last_trigger_pos_ = trigger_pos;
++  ROS_WARN_STREAM("T1S4R FSM trigger mode=" << planner_escape_trigger_mode_
++                  << " pos=" << trigger_pos.transpose());
++  maybeArmFusionEscape();
++}
++
++
++void FastExplorationManager::noteIdleReplan(int sign) {
++  ros::Time now = ros::Time::now();
++  if (!idle_origin_set_) {
++    idle_origin_ = now;
++    idle_origin_set_ = true;
++  }
++  if (planner_escape_idle_skip_sec_ > 0.0 && (now - idle_origin_).toSec() < planner_escape_idle_skip_sec_) {
++    return;  // skip startup noise
++  }
++  idle_events_.push_back({now, sign});
++  idle_net_ += sign;
++  const double win = planner_escape_idle_window_sec_;
++  while (!idle_events_.empty() && (now - idle_events_.front().first).toSec() > win) {
++    idle_net_ -= idle_events_.front().second;
++    idle_events_.pop_front();
++  }
++  if (idle_net_ < 0) idle_net_ = 0;
++}
++
++void FastExplorationManager::resetIdleWindow() {
++  idle_events_.clear();
++  idle_net_ = 0;
++}
++
++
++void FastExplorationManager::noteLowSpeedEscapeRequest(const std_msgs::String::ConstPtr& msg) {
++  if (!(planner_escape_shadow_ || planner_escape_enabled_)) return;
++  if (planner_escape_trigger_mode_ != "low_speed_escape") {
++    ROS_WARN_STREAM("T1S4R low_speed_escape ignored mode=" << planner_escape_trigger_mode_);
++    return;
++  }
++  const ros::Time now = ros::Time::now();
++  const double startup_age = idle_origin_set_ ? (now - idle_origin_).toSec() : 0.0;
++  if (planner_escape_startup_guard_sec_ > 0.0 && idle_origin_set_ &&
++      startup_age < planner_escape_startup_guard_sec_) {
++    ROS_WARN_STREAM("T1S4R low_speed_escape startup_guard age=" << startup_age
++                    << " guard=" << planner_escape_startup_guard_sec_);
++    return;
++  }
++  auto extract_number = [&msg](const std::string& key, double& out) -> bool {
++    const std::string needle = "\"" + key + "\":";
++    const size_t pos0 = msg->data.find(needle);
++    if (pos0 == std::string::npos) return false;
++    const char* begin = msg->data.c_str() + pos0 + needle.size();
++    char* end = nullptr;
++    const double val = std::strtod(begin, &end);
++    if (end == begin) return false;
++    out = val;
++    return true;
++  };
++  double x = 0.0, y = 0.0, z = 0.0, action_id = 0.0, urgent_retrigger = 0.0;
++  const bool has_pos = extract_number("x", x) && extract_number("y", y) && extract_number("z", z);
++  if (has_pos) low_speed_escape_request_pos_ = Eigen::Vector3d(x, y, z);
++  else low_speed_escape_request_pos_ = planner_last_fail_pos_;
++  if (!low_speed_escape_request_pos_.allFinite() ||
++      low_speed_escape_request_pos_.head<2>().norm() < 1e-6) {
++    low_speed_escape_request_pos_ = ed_->next_pos_;
++  }
++  if (extract_number("action_id", action_id)) {
++    low_speed_escape_request_id_ = static_cast<int>(std::llround(action_id));
++  } else {
++    ++low_speed_escape_request_id_;
++  }
++  low_speed_escape_urgent_ =
++      extract_number("urgent_retrigger", urgent_retrigger) && urgent_retrigger > 0.5;
++  low_speed_escape_request_time_ = now;
++  planner_last_candidate_time_ = now;
++  planner_last_fail_pos_ = low_speed_escape_request_pos_;
++  shadow_candidate_active_ = true;
++  low_speed_escape_requested_ = true;
++  ++planner_shadow_candidate_count_;
++  ROS_WARN_STREAM("T1S4R low_speed_escape request action_id=" << low_speed_escape_request_id_
++                  << " urgent=" << low_speed_escape_urgent_
++                  << " pos=" << low_speed_escape_request_pos_.transpose());
++  maybeArmFusionEscape();
++}
++
++void FastExplorationManager::maybeArmFusionEscape() {
++  if (!(planner_escape_shadow_ || planner_escape_enabled_)) return;
++  if (fusion_escape_armed_) return;
++  const ros::Time now = ros::Time::now();
++  const double startup_age = idle_origin_set_ ? (now - idle_origin_).toSec() : 0.0;
++  if (planner_escape_trigger_mode_ == "candidate_direct") {
++    if (!shadow_candidate_active_) return;
++    if (planner_escape_startup_guard_sec_ > 0.0 && idle_origin_set_ &&
++        startup_age < planner_escape_startup_guard_sec_) {
++      ROS_WARN_STREAM("T1S4R candidate_startup_guard age=" << startup_age
++                      << " guard=" << planner_escape_startup_guard_sec_);
++      return;
++    }
++  } else if (planner_escape_trigger_mode_ == "cluster_fsm") {
++    if (fsm_recovery_triggers_ < 1) return;
++    if (!planner_escape_idle_enabled_ ||
++        idle_net_ < planner_escape_idle_net_threshold_) {
++      ROS_WARN_STREAM("T1S4R cluster_fsm_not_ready idle_net=" << idle_net_
++                      << " threshold=" << planner_escape_idle_net_threshold_);
++      return;
++    }
++  } else if (planner_escape_trigger_mode_ == "low_speed_escape") {
++    if (!low_speed_escape_requested_) return;
++  } else {
++    if (!shadow_candidate_active_ || fsm_recovery_triggers_ < 1) return;
++    if (planner_escape_idle_enabled_ &&
++        idle_net_ < planner_escape_idle_net_threshold_) return;
++    const double age = (now - planner_last_candidate_time_).toSec();
++    if (fusion_match_mode_ == "fresh_overlap" && age > fusion_match_window_sec_) {
++      ROS_WARN_STREAM("T1S4R fusion_candidate_stale age=" << age
++                      << " window=" << fusion_match_window_sec_);
++      return;
++    }
++  }
++  fusion_escape_armed_ = true;
++  ROS_WARN_STREAM("T1S4R fusion_armed mode=" << planner_escape_trigger_mode_
++                  << " fsm_triggers=" << fsm_recovery_triggers_
++                  << " shadow_candidates=" << planner_shadow_candidate_count_
++                  << " idle_net=" << idle_net_);
++}
++
++void FastExplorationManager::updatePlannerShadowState(const std::string& viewpoint) {
++  if (!(planner_escape_shadow_ || planner_escape_enabled_)) return;
++  if (!viewpoint.empty()) {
++    planner_recent_views_.push_back(viewpoint);
++    while (planner_recent_views_.size() > 40) planner_recent_views_.pop_front();
++  }
++  double repeat_fraction = 0.0;
++  if (!planner_recent_views_.empty()) {
++    std::map<std::string, int> counts;
++    for (const auto& view : planner_recent_views_) counts[view] += 1;
++    int best = 0;
++    for (const auto& item : counts) best = std::max(best, item.second);
++    repeat_fraction = double(best) / double(planner_recent_views_.size());
++  }
++  const int effective_fail_count =
++      std::max(planner_consecutive_failures_, planner_fail_window_count_);
++  const bool fail_streak = effective_fail_count >= planner_escape_fail_threshold_;
++  const bool repeat_hit = repeat_fraction >= planner_escape_repeat_threshold_;
++  if (!(fail_streak || repeat_hit)) return;
++  if (shadow_candidate_active_) {
++    ROS_WARN_STREAM("T1S4R planner_shadow candidate_latched mode="
++                    << planner_escape_trigger_mode_);
++    return;
++  }
++  planner_shadow_candidate_count_ += 1;
++  shadow_candidate_active_ = true;
++  planner_last_candidate_time_ = ros::Time::now();
++  ROS_WARN_STREAM(
++      "T1S4R planner_shadow candidate streak=" << planner_consecutive_failures_
++      << " fail_window=" << planner_fail_window_count_
++      << " effective=" << effective_fail_count
++      << " repeat=" << repeat_fraction << " fail_streak=" << fail_streak
++      << " repeat_hit=" << repeat_hit);
++  maybeArmFusionEscape();
++}
++
++void FastExplorationManager::notePlannerPlanFail(const std::string& kind) {
++  if (!(planner_escape_shadow_ || planner_escape_enabled_)) return;
++  const ros::Time now = ros::Time::now();
++  if (planner_escape_v2_sticky_center_ && kind == "plan_fail" &&
++      !planner_last_detailed_fail_time_.isZero() &&
++      (now - planner_last_detailed_fail_time_).toSec() < 0.25) {
++    ROS_INFO("T1S4R planner_fail deduplicated_generic");
++    return;
++  }
++  if (kind != "plan_fail") planner_last_detailed_fail_time_ = now;
++  planner_consecutive_failures_ += 1;
++  planner_fail_events_.push_back(now);
++  const double win = std::max(0.1, planner_escape_fail_window_sec_);
++  while (!planner_fail_events_.empty() &&
++      (now - planner_fail_events_.front()).toSec() > win) {
++    planner_fail_events_.pop_front();
++  }
++  planner_fail_window_count_ = static_cast<int>(planner_fail_events_.size());
++  planner_last_fail_pos_ = ed_->next_pos_;
++  const int effective_fail_count =
++      std::max(planner_consecutive_failures_, planner_fail_window_count_);
++  ROS_WARN_STREAM("T1S4R planner_fail_window kind=" << kind
++                  << " consecutive=" << planner_consecutive_failures_
++                  << " window_count=" << planner_fail_window_count_
++                  << " window_sec=" << planner_escape_fail_window_sec_
++                  << " effective=" << effective_fail_count);
++  const double startup_age = idle_origin_set_ ? (now - idle_origin_).toSec() : 0.0;
++  const bool v2_startup_ready = !idle_origin_set_ ||
++      planner_escape_startup_guard_sec_ <= 0.0 ||
++      startup_age >= planner_escape_startup_guard_sec_;
++  if (planner_escape_v2_enabled_ && planner_escape_v2_trigger_on_planner_fail_ &&
++      v2_startup_ready && effective_fail_count >= planner_escape_fail_threshold_) {
++    const bool episode_was_active = planner_escape_v2_active_;
++    const bool preserve_episode = episode_was_active && planner_escape_v2_sticky_center_;
++    if (!preserve_episode) {
++      planner_escape_v2_active_ = true;
++      planner_escape_v2_center_ =
++          planner_escape_v2_sticky_center_ && planner_last_fail_origin_valid_ ?
++          planner_last_fail_origin_ : planner_last_fail_pos_;
++      planner_escape_v2_until_ = now + ros::Duration(planner_escape_v2_ttl_sec_);
++      if (!episode_was_active) planner_escape_v2_failed_targets_.clear();
++    } else {
++      ROS_INFO_STREAM("T1S4R v2_escape preserve_episode center="
++                      << planner_escape_v2_center_.transpose());
++    }
++    ROS_WARN_STREAM("T1S4R v2_escape armed_by_planner_fail kind=" << kind
++                    << " center=" << planner_escape_v2_center_.transpose()
++                    << " fail_streak=" << planner_consecutive_failures_
++                    << " fail_window=" << planner_fail_window_count_
++                    << " startup_age=" << startup_age);
++  }
++  updatePlannerShadowState(kind);
++  maybeArmFusionEscape();
++}
++
++void FastExplorationManager::maybeApplyPlannerEscape(vector<int>& ftr_ids, const Vector3d& cur_pos) {
++  if (!fusion_escape_armed_) return;
++  if (!planner_escape_enabled_ || !planner_escape_fusion_enabled_) return;
++  if (planner_escape_count_ >= planner_escape_max_count_) return;
++  const double cooldown = (ros::Time::now() - planner_escape_last_time_).toSec();
++  const double required_cooldown =
++      low_speed_escape_urgent_ ? planner_escape_urgent_cooldown_sec_ : planner_escape_cooldown_sec_;
++  if (cooldown < required_cooldown) return;
++  if (!fusionCollisionGuardOk()) {
++    ROS_WARN("T1S4R fusion_execute blocked collision_guard");
++    return;
++  }
++  if (ftr_ids.empty()) return;
++  planner_suppressed_center_ =
++      planner_escape_trigger_mode_ == "cluster_fsm" ? fsm_last_trigger_pos_ :
++      planner_escape_trigger_mode_ == "low_speed_escape" ? low_speed_escape_request_pos_ :
++      planner_last_fail_pos_;
++  if (!planner_suppressed_center_.allFinite() ||
++      planner_suppressed_center_.head<2>().norm() < 1e-6) {
++    planner_suppressed_center_ = cur_pos;
++  }
++  planner_suppress_until_ = ros::Time::now() + ros::Duration(planner_escape_suppress_sec_);
++  if (failure_memory_enabled_ && planner_escape_trigger_mode_ == "low_speed_escape") {
++    recordViewpointFailure(cur_pos, planner_suppressed_center_, "low_speed_escape");
++  }
++  planner_escape_count_ += 1;
++  planner_escape_last_time_ = ros::Time::now();
++  if (planner_escape_v2_enabled_) {
++    const ros::Time v2_now = ros::Time::now();
++    const bool preserve_episode = planner_escape_v2_active_ &&
++        v2_now <= planner_escape_v2_until_ && planner_escape_v2_sticky_center_;
++    planner_escape_v2_active_ = true;
++    if (!preserve_episode) {
++      planner_escape_v2_center_ = planner_suppressed_center_;
++      planner_escape_v2_failed_targets_.clear();
++    }
++    planner_escape_v2_until_ = v2_now + ros::Duration(planner_escape_v2_ttl_sec_);
++    ROS_WARN_STREAM("LE8G v2_escape low_speed_episode center="
++                    << planner_escape_v2_center_.transpose()
++                    << " preserve=" << preserve_episode
++                    << " failed_targets=" << planner_escape_v2_failed_targets_.size()
++                    << " until=" << planner_escape_v2_until_.toSec());
++  }
++  fusion_escape_armed_ = false;
++  low_speed_escape_requested_ = false;
++  low_speed_escape_urgent_ = false;
++  planner_consecutive_failures_ = 0;
++  planner_fail_window_count_ = 0;
++  planner_fail_events_.clear();
++  ROS_WARN_STREAM("T1S4R fusion_execute mode=" << planner_escape_trigger_mode_
++                  << " suppress_center=" << planner_suppressed_center_.transpose()
++                  << " cooldown=" << cooldown
++                  << " required_cooldown=" << required_cooldown
++                  << " escape_count=" << planner_escape_count_);
++  vector<int> kept;
++  kept.reserve(ftr_ids.size());
++  for (const int id : ftr_ids) {
++    if (id < 0 || id >= static_cast<int>(ed_->points_.size())) continue;
++    const auto& pt = ed_->points_[id];
++    const double d_sup = (pt.head<2>() - planner_suppressed_center_.head<2>()).norm();
++    if (d_sup <= planner_escape_cluster_radius_m_) {
++      ROS_WARN_STREAM("T1S4R planner_escape suppress frontier=" << id << " d=" << d_sup);
++      continue;
++    }
++    kept.push_back(id);
++  }
++  if (!kept.empty()) ftr_ids.swap(kept);
++  shadow_candidate_active_ = false;
++  if (planner_escape_trigger_mode_ != "legacy" &&
++      planner_escape_trigger_mode_ != "fresh_overlap") resetIdleWindow();
++  ROS_WARN_STREAM("T1S4R planner_escape topology_bonus=" << planner_escape_topology_bonus_
++                  << " kept_frontiers=" << ftr_ids.size());
++}
++
++void FastExplorationManager::refreshFailureMemory() {
++  if (!failure_memory_enabled_) return;
++  const double now = ros::Time::now().toSec();
++  for (auto& region : failure_regions_) {
++    if (!region.release_logged && now >= region.blocked_until) {
++      ROS_INFO("S3F released_failure x=%.3f y=%.3f z=%.3f failures=%d", region.center.x(),
++          region.center.y(), region.center.z(), region.failure_count);
++      region.release_logged = true;
++    }
++  }
++  failure_regions_.erase(
++      std::remove_if(failure_regions_.begin(), failure_regions_.end(),
++          [this, now](const FailureRegion& region) {
++            return now - region.last_failure_time > failure_forget_sec_;
++          }),
++      failure_regions_.end());
++}
++
++void FastExplorationManager::recordViewpointFailure(
++    const Vector3d& from, const Vector3d& pos, const std::string& reason) {
++  if (reason != "low_speed_escape") {
++    planner_last_fail_origin_ = from;
++    planner_last_fail_origin_valid_ = from.allFinite();
++  }
++  if (planner_escape_v2_failed_target_memory_ && planner_escape_v2_active_ &&
++      planner_escape_v2_goal_overridden_ &&
++      (planner_escape_v2_goal_.head<2>() - pos.head<2>()).norm() <= 0.25) {
++    const double expiry = ros::Time::now().toSec() + planner_escape_v2_memory_ttl_sec_;
++    bool updated = false;
++    for (auto& item : planner_escape_v2_failed_targets_) {
++      if ((item.first.head<2>() - pos.head<2>()).norm() <=
++          planner_escape_v2_failed_target_radius_m_) {
++        item = {pos, expiry};
++        updated = true;
++        break;
++      }
++    }
++    if (!updated) planner_escape_v2_failed_targets_.push_back({pos, expiry});
++    if (planner_escape_v2_failed_targets_.size() > 16)
++      planner_escape_v2_failed_targets_.erase(planner_escape_v2_failed_targets_.begin());
++    ROS_WARN_STREAM("T1S4R v2_escape failed_target_record reason=" << reason
++                    << " target=" << pos.transpose()
++                    << " count=" << planner_escape_v2_failed_targets_.size());
++    planner_escape_v2_goal_overridden_ = false;
++  }
++  if (!failure_memory_enabled_) return;  // LE8G v2 memory is independent.
++  if (reason == "postplan_unsafe") {
++    // Keep the short-lived per-episode failed target above, but do not turn a
++    // safety-check rejection into a 120 s global frontier blacklist.
++    ROS_INFO_STREAM("LE8E postplan_guard local_memory_only target=" << pos.transpose());
++    return;
++  }
++  Vector3d approach = pos - from;
++  approach.z() = 0.0;
++  if (approach.norm() > 1e-3)
++    approach.normalize();
++  else
++    approach.setZero();
++  const double now = ros::Time::now().toSec();
++  FailureRegion* matched = nullptr;
++  double best_distance = failure_region_size_m_;
++  for (auto& region : failure_regions_) {
++    const double distance = (region.center.head<2>() - pos.head<2>()).norm();
++    const bool same_reason = region.reason == reason;
++    const bool same_approach = region.approach.norm() < 1e-3 || approach.norm() < 1e-3 ||
++        region.approach.dot(approach) >= failure_approach_cos_;
++    if (same_reason && same_approach && distance <= best_distance) {
++      best_distance = distance;
++      matched = &region;
++    }
++  }
++  if (matched == nullptr) {
++    failure_regions_.push_back(
++        { pos, approach, reason, 0, now, now, false, false });
++    matched = &failure_regions_.back();
++  }
++
++  matched->center = pos;
++  matched->approach = approach;
++  matched->reason = reason;
++  matched->failure_count += 1;
++  matched->last_failure_time = now;
++  matched->blacklisted = matched->failure_count >= failure_blacklist_threshold_;
++  matched->blocked_until =
++      now + (matched->blacklisted ? failure_blacklist_sec_ : failure_cooldown_sec_);
++  matched->release_logged = false;
++  ROS_WARN(
++      "S3F failure_memory_record type=%s x=%.3f y=%.3f z=%.3f failures=%d blacklisted=%d "
++      "blocked_until=%.3f enforce=%d",
++      reason.c_str(), pos.x(), pos.y(), pos.z(), matched->failure_count,
++      matched->blacklisted ? 1 : 0, matched->blocked_until, failure_memory_enforce_ ? 1 : 0);
++}
++
++double FastExplorationManager::failureMemoryPenalty(
++    const Vector3d& from, const Vector3d& pos, bool* blacklisted, bool shadow) {
++  if (blacklisted != nullptr) *blacklisted = false;
++  if (!failure_memory_enabled_ || (!failure_memory_enforce_ && !shadow)) return 0.0;
++  const double now = ros::Time::now().toSec();
++  FailureRegion* matched = nullptr;
++  double best_distance = failure_region_size_m_;
++  Vector3d approach = pos - from;
++  approach.z() = 0.0;
++  if (approach.norm() > 1e-3)
++    approach.normalize();
++  else
++    approach.setZero();
++  for (auto& region : failure_regions_) {
++    if (now >= region.blocked_until) continue;
++    if (failure_memory_enforce_low_speed_only_ && !shadow &&
++        region.reason != "low_speed_escape" &&
++        region.reason != "postplan_global_unsafe") {
++      continue;
++    }
++    const double distance = (region.center.head<2>() - pos.head<2>()).norm();
++    const bool same_approach = region.approach.norm() < 1e-3 || approach.norm() < 1e-3 ||
++        region.approach.dot(approach) >= failure_approach_cos_;
++    if (same_approach && distance <= best_distance) {
++      best_distance = distance;
++      matched = &region;
++    }
++  }
++  if (matched == nullptr) return 0.0;
++  if (blacklisted != nullptr) *blacklisted = matched->blacklisted;
++  const double reason_scale =
++      matched->reason == "kinodynamic_replan" ? failure_kino_scale_ : 1.0;
++  return reason_scale * (matched->blacklisted ? 2.0 : 1.0);
++}
++
++double FastExplorationManager::failureMemoryPenalty(
++    const Vector3d& pos, bool* blacklisted) {
++  return failureMemoryPenalty(pos, pos, blacklisted);
++}
++
++bool FastExplorationManager::failureMemoryBlacklisted(const Vector3d& pos) {
++  bool blacklisted = false;
++  failureMemoryPenalty(pos, &blacklisted);
++  return blacklisted;
++}
++
++void FastExplorationManager::applyFailureMemoryCosts(
++    Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num) {
++  if (!failure_memory_enabled_ || !failure_memory_enforce_) return;
++  if (!failure_memory_frontier_soft_enforce_) {
++    ROS_INFO("S3F frontier_penalty_disabled frontiers=%zu", ftr_ids.size());
++    return;
++  }
++  if (ftr_ids.size() < 2 || mat.rows() <= drone_num) {
++    ROS_INFO("S3F frontier_soft_summary frontiers=%zu applied=0 reason=insufficient", ftr_ids.size());
++    return;
++  }
++
++  vector<double> base_costs(ftr_ids.size(), 0.0);
++  vector<double> penalties(ftr_ids.size(), 0.0);
++  vector<double> finite_costs;
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    const int col = 1 + drone_num + i;  // LE8G memory true frontier column
++    if (col < mat.cols()) {
++      base_costs[i] = mat(drone_num, col);
++      if (std::isfinite(base_costs[i]) && base_costs[i] > 0.0 && base_costs[i] < 10000.0)
++        finite_costs.push_back(base_costs[i]);
++    }
++  }
++  double cost_median = 0.0;
++  if (!finite_costs.empty()) {
++    const size_t mid = finite_costs.size() / 2;
++    std::nth_element(finite_costs.begin(), finite_costs.begin() + mid, finite_costs.end());
++    cost_median = finite_costs[mid];
++  }
++
++  int matched = 0;
++  double max_ratio = 0.0;
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    const int id = ftr_ids[i];
++    if (id < 0 || id >= static_cast<int>(ed_->points_.size())) continue;
++    const Vector3d& point = ed_->points_[id];
++    const double multiplier = failureMemoryPenalty(point);
++    const double clearance = sdf_map_->getDistance(point);
++    const double protect =
++        clearance < failure_clearance_protect_m_ ? failure_protected_scale_ : 1.0;
++    if (multiplier > 0.0 && std::isfinite(base_costs[i]) &&
++        base_costs[i] > 0.0 && cost_median > 0.0) {
++      penalties[i] = std::min(failure_frontier_penalty_ratio_ * base_costs[i],
++          failure_cost_penalty_ * cost_median * multiplier * protect);
++      if (penalties[i] > 0.0) {
++        ++matched;
++        max_ratio = std::max(max_ratio, penalties[i] / std::max(base_costs[i], 1e-3));
++      }
++    }
++  }
++
++  const double fraction = ftr_ids.empty() ? 0.0 :
++      static_cast<double>(matched) / static_cast<double>(ftr_ids.size());
++  const bool guarded = matched > 0 && matched < static_cast<int>(ftr_ids.size()) &&
++      fraction <= failure_frontier_max_fraction_;
++  if (guarded) {
++    for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++      const int col = 1 + drone_num + i;
++      if (penalties[i] <= 0.0 || col >= mat.cols()) continue;
++      for (int row = 0; row < mat.rows(); ++row) {
++        if (row == col) continue;
++        mat(row, col) += penalties[i];
++      }
++    }
++  }
++  ROS_INFO(
++      "S3F frontier_soft_summary frontiers=%zu matched=%d fraction=%.3f guarded=%d "
++      "applied=%d median=%.3f max_ratio=%.3f max_fraction=%.3f",
++      ftr_ids.size(), matched, fraction, guarded ? 1 : 0, guarded ? 1 : 0,
++      cost_median, max_ratio, failure_frontier_max_fraction_);
++}
++
++
++
++
++
++
++
++
++
++
++
++void FastExplorationManager::applyGainRankCosts(
++    Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num) {
++  if (!gain_rank_enforce_) return;
++  if (ftr_ids.empty() || mat.rows() <= drone_num) {
++    ROS_INFO("LE7 gain_rank_summary frontiers=%zu applied=0 reason=insufficient",
++        ftr_ids.size());
++    return;
++  }
++
++  vector<double> base_costs(ftr_ids.size(), 0.0);
++  vector<double> bonus_deltas(ftr_ids.size(), 0.0);
++  vector<double> penalty_deltas(ftr_ids.size(), 0.0);
++  vector<double> finite_gains;
++  vector<double> gains(ftr_ids.size(), 0.0);
++  vector<int> gain_ok(ftr_ids.size(), 0);
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    const int id = ftr_ids[i];
++    const int col = 1 + drone_num + i;  // frontier i column (depot 0, drones 1..drone_num)
++    if (col >= mat.cols() || id < 0 || id >= static_cast<int>(ed_->points_.size())) continue;
++    base_costs[i] = mat(drone_num, col);  // drone-0 row (row 1 when drone_num == 1)
++    if (!std::isfinite(base_costs[i]) || base_costs[i] <= 0.0) continue;
++    if (id < static_cast<int>(ed_->yaws_.size())) {
++      const double gain = static_cast<double>(
++          frontier_finder_->computeGainOfView(ed_->points_[id], ed_->yaws_[id]));
++      if (std::isfinite(gain)) {
++        gains[i] = std::max(0.0, gain);
++        gain_ok[i] = 1;
++        finite_gains.push_back(gains[i]);
++      }
++    }
++  }
++  if (finite_gains.empty()) {
++    ROS_INFO("LE7 gain_rank_summary frontiers=%zu applied=0 reason=no_gain", ftr_ids.size());
++    return;
++  }
++
++  vector<double> sorted_gains = finite_gains;
++  const size_t mid = sorted_gains.size() / 2;
++  std::nth_element(sorted_gains.begin(), sorted_gains.begin() + mid, sorted_gains.end());
++  const double median_gain = sorted_gains[mid];
++
++  int boosted = 0;
++  int penalized = 0;
++  int finite = 0;
++  int best_idx = -1;
++  double best_gain = -1.0;
++  double best_base = 0.0;
++  double max_bonus_ratio = 0.0;
++  double max_penalty_ratio = 0.0;
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    if (!gain_ok[i]) continue;
++    if (!std::isfinite(base_costs[i]) || base_costs[i] <= 0.0) continue;
++
++    const double gain = gains[i];
++    ++finite;
++    if (gain > best_gain || (std::fabs(gain - best_gain) <= 1e-9 &&
++        (best_idx < 0 || base_costs[i] < best_base))) {
++      best_idx = i;
++      best_gain = gain;
++      best_base = base_costs[i];
++    }
++
++    const double capped_gain = std::min(gain, std::max(0.0, gain_rank_gain_cap_));
++    double bonus = std::min(gain_rank_gain_weight_ * capped_gain,
++        gain_rank_bonus_ratio_ * base_costs[i]);
++    if (median_gain > 0.0 && gain < median_gain * 0.75) {
++      bonus *= 0.35;
++    }
++    if (bonus > 0.0) {
++      bonus_deltas[i] -= bonus;
++      ++boosted;
++      max_bonus_ratio = std::max(max_bonus_ratio, bonus / std::max(base_costs[i], 1e-3));
++    }
++
++    if (gain <= gain_rank_low_gain_threshold_ && gain_rank_low_gain_penalty_ratio_ > 0.0) {
++      const double penalty = gain_rank_low_gain_penalty_ratio_ * base_costs[i];
++      penalty_deltas[i] += penalty;
++      ++penalized;
++      max_penalty_ratio = std::max(max_penalty_ratio, penalty / std::max(base_costs[i], 1e-3));
++    }
++  }
++
++  const double affected_fraction = ftr_ids.empty() ? 0.0 :
++      static_cast<double>(boosted + penalized) / static_cast<double>(ftr_ids.size());
++  const double penalty_fraction = ftr_ids.empty() ? 0.0 :
++      static_cast<double>(penalized) / static_cast<double>(ftr_ids.size());
++  const bool penalty_guarded = penalty_fraction <= gain_rank_max_fraction_;
++  int applied_cols = 0;
++  int fallback_cols = 0;
++  if (finite > 0) {
++    for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++      const int col = 1 + drone_num + i;
++      if (col >= mat.cols()) continue;
++      double delta = bonus_deltas[i];
++      if (penalty_guarded) delta += penalty_deltas[i];
++      if (std::fabs(delta) <= 1e-9) continue;
++      ++applied_cols;
++      for (int row = 0; row < mat.rows(); ++row) {
++        if (row == col) continue;
++        mat(row, col) = std::max(0.01, mat(row, col) + delta);
++      }
++    }
++    if (applied_cols == 0 && best_idx >= 0) {
++      const int col = 1 + drone_num + best_idx;
++      if (col < mat.cols() && std::isfinite(base_costs[best_idx]) && base_costs[best_idx] > 0.0) {
++        const double fallback_bonus = std::min(
++            0.05 * base_costs[best_idx],
++            std::max(0.05, gain_rank_bonus_ratio_ * base_costs[best_idx] * 0.25));
++        for (int row = 0; row < mat.rows(); ++row) {
++          if (row == col) continue;
++          mat(row, col) = std::max(0.01, mat(row, col) - fallback_bonus);
++        }
++        applied_cols = 1;
++        fallback_cols = 1;
++        max_bonus_ratio = std::max(max_bonus_ratio,
++            fallback_bonus / std::max(base_costs[best_idx], 1e-3));
++      }
++    }
++  }
++  ROS_INFO(
++      "LE7 gain_rank_summary frontiers=%zu finite=%d boosted=%d penalized=%d "
++      "fraction=%.3f penalty_fraction=%.3f penalty_guarded=%d applied=%d "
++      "applied_cols=%d fallback_cols=%d median_gain=%.3f max_bonus_ratio=%.3f max_penalty_ratio=%.3f "
++      "gain_weight=%.3f",
++      ftr_ids.size(), finite, boosted, penalized, affected_fraction, penalty_fraction,
++      penalty_guarded ? 1 : 0, applied_cols > 0 ? 1 : 0, applied_cols, fallback_cols,
++      median_gain, max_bonus_ratio, max_penalty_ratio, gain_rank_gain_weight_);
++}
++
++
++void FastExplorationManager::applyTargetRepeatCosts(
++    Eigen::MatrixXd& mat, const vector<int>& ftr_ids, int drone_num) {
++  if (!repeat_frontier_soft_enforce_) return;
++  if (ftr_ids.size() < 2 || mat.rows() <= drone_num) {
++    ROS_INFO("LE6 repeat_frontier_summary frontiers=%zu applied=0 reason=insufficient",
++        ftr_ids.size());
++    return;
++  }
++
++  vector<double> base_costs(ftr_ids.size(), 0.0);
++  vector<double> penalties(ftr_ids.size(), 0.0);
++  vector<double> finite_costs;
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    const int col = 1 + drone_num + i;  // LE8G LE6 true frontier column
++    if (col >= mat.cols()) continue;
++    base_costs[i] = mat(drone_num, col);
++    if (std::isfinite(base_costs[i]) && base_costs[i] > 0.0 && base_costs[i] < 10000.0)
++      finite_costs.push_back(base_costs[i]);
++  }
++  double cost_median = 0.0;
++  if (!finite_costs.empty()) {
++    const size_t mid = finite_costs.size() / 2;
++    std::nth_element(finite_costs.begin(), finite_costs.begin() + mid, finite_costs.end());
++    cost_median = finite_costs[mid];
++  }
++
++  const double now = ros::Time::now().toSec();
++  int matched = 0;
++  int low_gain_count = 0;
++  double max_ratio = 0.0;
++  int best_idx = -1;
++  double best_cost = std::numeric_limits<double>::infinity();
++  for (int i = 0; i < static_cast<int>(base_costs.size()); ++i) {
++    if (std::isfinite(base_costs[i]) && base_costs[i] > 0.0 && base_costs[i] < best_cost) {
++      best_cost = base_costs[i];
++      best_idx = i;
++    }
++  }
++
++  const int repeat_threshold = std::max(1, repeat_frontier_threshold_);
++  const int strong_threshold = std::max(repeat_threshold, repeat_frontier_strong_threshold_);
++  for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++    const int id = ftr_ids[i];
++    if (id < 0 || id >= static_cast<int>(ed_->points_.size())) continue;
++    if (!std::isfinite(base_costs[i]) || base_costs[i] <= 0.0 || cost_median <= 0.0) continue;
++
++    int repeat = 0;
++    auto repeat_it = target_repeat_counts_.find(id);
++    if (repeat_it != target_repeat_counts_.end()) repeat = repeat_it->second;
++
++    double gain = std::numeric_limits<double>::quiet_NaN();
++    if (id >= 0 && id < static_cast<int>(ed_->yaws_.size())) {
++      gain = static_cast<double>(frontier_finder_->computeGainOfView(ed_->points_[id], ed_->yaws_[id]));
++    }
++    const bool low_gain = std::isfinite(gain) && gain <= repeat_frontier_low_gain_threshold_;
++    if (low_gain) ++low_gain_count;
++
++    double blocked_until = 0.0;
++    auto block_it = repeat_frontier_blocked_until_.find(id);
++    if (block_it != repeat_frontier_blocked_until_.end()) blocked_until = block_it->second;
++    const bool active_cooldown = blocked_until > now;
++
++    if ((repeat >= strong_threshold || (repeat >= repeat_threshold && low_gain)) &&
++        repeat_frontier_cooldown_sec_ > 0.0) {
++      repeat_frontier_blocked_until_[id] = now + repeat_frontier_cooldown_sec_;
++      blocked_until = repeat_frontier_blocked_until_[id];
++    }
++
++    if (repeat < repeat_threshold && blocked_until <= now) continue;
++
++    double severity = 1.0;
++    if (strong_threshold > repeat_threshold) {
++      severity += std::min(1.0,
++          static_cast<double>(std::max(0, repeat - repeat_threshold)) /
++          static_cast<double>(strong_threshold - repeat_threshold));
++    }
++    if (low_gain) severity += 0.5;
++    if (active_cooldown) severity = std::max(severity, 1.25);
++    penalties[i] = std::min(repeat_frontier_penalty_ratio_ * base_costs[i] * severity,
++        repeat_frontier_max_penalty_ratio_ * base_costs[i]);
++    if (penalties[i] > 0.0) {
++      ++matched;
++      max_ratio = std::max(max_ratio, penalties[i] / std::max(base_costs[i], 1e-3));
++    }
++  }
++
++  if (matched == static_cast<int>(ftr_ids.size()) && best_idx >= 0 && penalties[best_idx] > 0.0) {
++    penalties[best_idx] = 0.0;
++    --matched;
++  }
++
++  const double fraction = ftr_ids.empty() ? 0.0 :
++      static_cast<double>(matched) / static_cast<double>(ftr_ids.size());
++  const bool guarded = matched > 0 && matched < static_cast<int>(ftr_ids.size()) &&
++      fraction <= repeat_frontier_max_fraction_;
++  if (guarded) {
++    for (int i = 0; i < static_cast<int>(ftr_ids.size()); ++i) {
++      const int col = 1 + drone_num + i;
++      if (penalties[i] <= 0.0 || col >= mat.cols()) continue;
++      for (int row = 0; row < mat.rows(); ++row) {
++        if (row == col) continue;
++        mat(row, col) += penalties[i];
++      }
++    }
++  }
++  ROS_INFO(
++      "LE6 repeat_frontier_summary frontiers=%zu matched=%d fraction=%.3f guarded=%d "
++      "applied=%d median=%.3f max_ratio=%.3f repeat_threshold=%d strong_threshold=%d "
++      "low_gain=%d max_fraction=%.3f",
++      ftr_ids.size(), matched, fraction, guarded ? 1 : 0, guarded ? 1 : 0,
++      cost_median, max_ratio, repeat_threshold, strong_threshold,
++      low_gain_count, repeat_frontier_max_fraction_);
++}
++
++
+ }  // namespace fast_planner
+diff --git a/swarm_exploration/plan_env/include/plan_env/sdf_map.h b/swarm_exploration/plan_env/include/plan_env/sdf_map.h
+index 0f204de..2ea7f79 100644
+--- a/swarm_exploration/plan_env/include/plan_env/sdf_map.h
++++ b/swarm_exploration/plan_env/include/plan_env/sdf_map.h
+@@ -235,7 +235,9 @@ inline void SDFMap::setOccupied(const Eigen::Vector3d& pos, const int& occ) {
+ }
+ 
+ inline int SDFMap::getInflateOccupancy(const Eigen::Vector3i& id) {
+-  if (!isInMap(id)) return -1;
++  // The map boundary is a hard flight envelope. Treating outside-map cells
++  // as free lets A* and collision checks generate trajectories below floor.
++  if (!isInMap(id)) return 1;
+   return int(md_->occupancy_buffer_inflate_[toAddress(id)]);
+ }
+ 
+@@ -246,7 +248,7 @@ inline int SDFMap::getInflateOccupancy(const Eigen::Vector3d& pos) {
+ }
+ 
+ inline double SDFMap::getDistance(const Eigen::Vector3i& id) {
+-  if (!isInMap(id)) return -1;
++  if (!isInMap(id)) return 0.0;
+   return md_->distance_buffer_[toAddress(id)];
+ }
+ 
+@@ -286,4 +288,4 @@ inline void SDFMap::inflatePoint(
+       }
+ }
+ }  // namespace fast_planner
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/swarm_exploration/plan_manage/include/plan_manage/planner_manager.h b/swarm_exploration/plan_manage/include/plan_manage/planner_manager.h
+index d2c2ce6..75208ce 100644
+--- a/swarm_exploration/plan_manage/include/plan_manage/planner_manager.h
++++ b/swarm_exploration/plan_manage/include/plan_manage/planner_manager.h
+@@ -44,6 +44,7 @@ public:
+   void setGlobalWaypoints(vector<Eigen::Vector3d>& waypoints);
+ 
+   bool checkTrajCollision(double& distance);
++  void setOdomPos(const Eigen::Vector3d& pos) { odom_pos_ = pos; odom_pos_valid_ = true; }
+   void calcNextYaw(const double& last_yaw, double& yaw);
+ 
+   bool checkSwarmCollision(const int& drone_id);
+@@ -64,6 +65,10 @@ private:
+ 
+   shared_ptr<SDFMap> sdf_map_;
+   vector<BsplineOptimizer::Ptr> bspline_optimizers_;
++  Eigen::Vector3d odom_pos_;
++  bool odom_pos_valid_ = false;
++  bool traj_safety_reject_unknown_ = false;
++  double traj_safety_extra_clearance_m_ = 0.0;
+ 
+   void updateTrajInfo();
+ 
+diff --git a/swarm_exploration/plan_manage/src/planner_manager.cpp b/swarm_exploration/plan_manage/src/planner_manager.cpp
+index 2327cba..5c46554 100644
+--- a/swarm_exploration/plan_manage/src/planner_manager.cpp
++++ b/swarm_exploration/plan_manage/src/planner_manager.cpp
+@@ -4,6 +4,7 @@
+ #include <plan_env/raycast.h>
+ 
+ #include <thread>
++#include <cmath>
+ #include <pcl/point_cloud.h>
+ #include <pcl/point_types.h>
+ #include <pcl_conversions/pcl_conversions.h>
+@@ -36,6 +37,8 @@ void FastPlannerManager::initPlanModules(ros::NodeHandle& nh) {
+   nh.param("manager/min_time", pp_.min_time_, false);
+   nh.param("manager/relax_time1", pp_.relax_time1_, 0.5);
+   nh.param("manager/relax_time2", pp_.relax_time2_, 0.5);
++  nh.param("trajectory_safety/reject_unknown", traj_safety_reject_unknown_, false);
++  nh.param("trajectory_safety/extra_clearance_m", traj_safety_extra_clearance_m_, 0.0);
+ 
+   bool use_geometric_path, use_kinodynamic_path, use_topo_path, use_optimization,
+       use_active_perception;
+@@ -96,9 +99,28 @@ void FastPlannerManager::setGlobalWaypoints(vector<Eigen::Vector3d>& waypoints)
+ }
+ 
+ bool FastPlannerManager::checkTrajCollision(double& distance) {
++  // mavros TIMESYNC overflow periodically corrupts ros::Time::now(), shifting
++  // t_now by a fixed offset until the next jump. Sampling the trajectory at a
++  // polluted t_now yields a point far from the real drone position, which can
++  // land on an inflated voxel and trigger a false collision that abandons a
++  // perfectly safe trajectory. Guard against that before judging collision.
+   double t_now = (ros::Time::now() - local_data_.start_time_).toSec();
++  if (!std::isfinite(t_now) || t_now < -2.0 || t_now > local_data_.duration_ + 2.0) {
++    // No trustworthy time within the active trajectory -> skip collision check.
++    return true;
++  }
+ 
+   Eigen::Vector3d cur_pt = local_data_.position_traj_.evaluateDeBoorT(t_now);
++
++  // When a fresh odom position is available, reject a t_now that still falls
++  // inside [0, duration_] but samples a point far from where the drone really
++  // is (a time-jump offset that persists until the next jump).
++  const double kMaxTrajDev = 1.5;  // m; true tracking error stays well below this
++  if (odom_pos_valid_ &&
++      (!std::isfinite(cur_pt.squaredNorm()) || (cur_pt - odom_pos_).norm() > kMaxTrajDev)) {
++    return true;
++  }
++
+   double radius = 0.0;
+   Eigen::Vector3d fut_pt;
+   double fut_t = 0.02;
+@@ -106,10 +128,24 @@ bool FastPlannerManager::checkTrajCollision(double& distance) {
+   while (radius < 6.0 && t_now + fut_t < local_data_.duration_) {
+     fut_pt = local_data_.position_traj_.evaluateDeBoorT(t_now + fut_t);
+     // double dist = edt_environment_->sdf_map_->getDistance(fut_pt);
+-    if (sdf_map_->getInflateOccupancy(fut_pt) == 1) {
++    const int inflate_occupancy = sdf_map_->getInflateOccupancy(fut_pt);
++    const int raw_occupancy = sdf_map_->getOccupancy(fut_pt);
++    const double clearance = sdf_map_->getDistance(fut_pt);
++    const bool unknown_unsafe = traj_safety_reject_unknown_ &&
++        raw_occupancy == SDFMap::UNKNOWN;
++    const double current_clearance = sdf_map_->getDistance(cur_pt);
++    const bool clearance_unsafe = clearance + 1e-6 < traj_safety_extra_clearance_m_ &&
++        (current_clearance + 1e-6 >= traj_safety_extra_clearance_m_ ||
++         clearance + 0.02 < current_clearance);
++    if (inflate_occupancy == 1 || unknown_unsafe || clearance_unsafe) {
+       distance = radius;
+-      // std::cout << "collision at: " << fut_pt.transpose() << ", dist: " << dist << std::endl;
+-      std::cout << "collision at: " << fut_pt.transpose() << std::endl;
++      ROS_WARN_STREAM("LE8H live_traj_guard reject point=" << fut_pt.transpose()
++                      << " radius=" << radius
++                      << " inflate_occupancy=" << inflate_occupancy
++                      << " raw_occupancy=" << raw_occupancy
++                      << " clearance=" << clearance
++                      << " current_clearance=" << current_clearance
++                      << " required_clearance=" << traj_safety_extra_clearance_m_);
+       return false;
+     }
+     radius = (fut_pt - cur_pt).norm();
+@@ -209,17 +245,64 @@ bool FastPlannerManager::kinodynamicReplan(const Eigen::Vector3d& start_pt,
+ 
+ void FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& tour,
+     const Eigen::Vector3d& cur_vel, const Eigen::Vector3d& cur_acc, const double& time_lb) {
+-  if (tour.empty()) ROS_ERROR("Empty path to traj planner");
++  if (tour.empty()) {
++    ROS_ERROR("Empty path to traj planner");
++    return;
++  }
++
++  // A* can legitimately return a one-point path when the selected viewpoint
++  // is already occupied by the vehicle.  PolynomialTraj expects N waypoints
++  // and N-1 nonzero segment times; passing one point creates a 0x0 Eigen
++  // system and aborts the exploration node.  Hold the current point briefly
++  // so the FSM can replan normally on the next cycle.
++  vector<Eigen::Vector3d> safe_tour;
++  // A near-zero segment is just as dangerous as a literal one-point path:
++  // the polynomial solver can receive repeated waypoints after A* snaps a
++  // viewpoint onto the current voxel.  Compact these points before building
++  // the waypoint matrix.
++  const double waypoint_eps = 0.05;
++  for (const Eigen::Vector3d& point : tour) {
++    if (!std::isfinite(point.x()) || !std::isfinite(point.y()) || !std::isfinite(point.z())) {
++      ROS_WARN("Ignoring non-finite waypoint in exploration path");
++      continue;
++    }
++    if (safe_tour.empty() || (point - safe_tour.back()).norm() > waypoint_eps)
++      safe_tour.push_back(point);
++  }
++  if (safe_tour.empty()) {
++    ROS_ERROR("Exploration path has no finite waypoint");
++    return;
++  }
++  if (safe_tour.size() == 1) {
++    // Holding at the exact current voxel does not change the map, so the
++    // frontier selector can return the same viewpoint forever.  A vertical
++    // escape alone is ineffective in the PX4 adapter because it clamps the
++    // physical altitude to its safe floor.  Insert a short horizontal escape
++    // in the current travel direction (or +X when nearly stationary), so the
++    // vehicle actually changes viewpoint and the frontier selector can move
++    // on to another frontier.
++    Eigen::Vector3d escape = cur_vel;
++    escape.z() = 0.0;
++    if (escape.norm() > 0.05)
++      escape = 0.35 * escape.normalized();
++    else
++      escape = Eigen::Vector3d(0.35, 0.0, 0.0);
++    safe_tour.push_back(safe_tour.front() + escape);
++    ROS_WARN("Degenerate one-point path; inserting a short horizontal escape segment.");
++  }
+ 
+   // Generate traj through waypoints-based method
+-  const int pt_num = tour.size();
++  const int pt_num = safe_tour.size();
+   Eigen::MatrixXd pos(pt_num, 3);
+-  for (int i = 0; i < pt_num; ++i) pos.row(i) = tour[i];
++  for (int i = 0; i < pt_num; ++i) pos.row(i) = safe_tour[i];
+ 
+   Eigen::Vector3d zero(0, 0, 0);
+   Eigen::VectorXd times(pt_num - 1);
+-  for (int i = 0; i < pt_num - 1; ++i)
+-    times(i) = (pos.row(i + 1) - pos.row(i)).norm() / (pp_.max_vel_ * 0.5);
++  const double time_denom = max(pp_.max_vel_ * 0.5, 1e-3);
++  for (int i = 0; i < pt_num - 1; ++i) {
++    const double distance_time = (pos.row(i + 1) - pos.row(i)).norm() / time_denom;
++    times(i) = max(0.2, distance_time);
++  }
+ 
+   PolynomialTraj init_traj;
+   PolynomialTraj::waypointsTraj(pos, cur_vel, zero, cur_acc, zero, times, init_traj);
+@@ -251,7 +334,7 @@ void FastPlannerManager::planExploreTraj(const vector<Eigen::Vector3d>& tour,
+ 
+   vector<Vector3d> start, end;
+   tmp_traj.getBoundaryStates(2, 0, start, end);
+-  start[0] = tour[0];
++  start[0] = safe_tour[0];
+   start[1] = cur_vel;
+   start[2] = cur_acc;
+   bspline_optimizers_[0]->setBoundaryStates(start, end);
+diff --git a/swarm_exploration/poly_traj/src/polynomial_traj.cpp b/swarm_exploration/poly_traj/src/polynomial_traj.cpp
+index 9de81b2..73a7be9 100644
+--- a/swarm_exploration/poly_traj/src/polynomial_traj.cpp
++++ b/swarm_exploration/poly_traj/src/polynomial_traj.cpp
+@@ -1,4 +1,5 @@
+ #include <iostream>
++#include <cmath>
+ #include <poly_traj/polynomial_traj.h>
+ 
+ namespace fast_planner {
+@@ -8,6 +9,68 @@ void PolynomialTraj::waypointsTraj(const Eigen::MatrixXd& positions, const Eigen
+                                    PolynomialTraj& poly_traj) {
+   const int seg_num = times.size();
+ 
++  // The general minimum-jerk mapping below assumes at least two segments.
++  // For one segment its continuity matrix has columns 6/7 although the
++  // one-segment system only has six columns, which triggers Eigen's bounds
++  // assertion.  Use the direct quintic boundary-value solution instead.
++  auto add_one_segment = [&](const Eigen::Vector3d& p0, const Eigen::Vector3d& p1,
++                             const Eigen::Vector3d& v0, const Eigen::Vector3d& v1,
++                             const Eigen::Vector3d& a0, const Eigen::Vector3d& a1,
++                             double duration) {
++    const double T = std::max(duration, 0.2);
++    const double T2 = T * T;
++    const double T3 = T2 * T;
++    const double T4 = T3 * T;
++    const double T5 = T4 * T;
++    const Eigen::Vector3d dp = p1 - p0;
++
++    Eigen::Matrix<double, 6, 1> cx, cy, cz;
++    for (int axis = 0; axis < 3; ++axis) {
++      const double c0 = p0(axis);
++      const double c1 = v0(axis);
++      const double c2 = 0.5 * a0(axis);
++      const double c3 = 10.0 * dp(axis) / T3 - (6.0 * v0(axis) + 4.0 * v1(axis)) / T2
++                        - (1.5 * a0(axis) - 0.5 * a1(axis)) / T;
++      const double c4 = -15.0 * dp(axis) / T4 + (8.0 * v0(axis) + 7.0 * v1(axis)) / T3
++                        + (1.5 * a0(axis) - a1(axis)) / T2;
++      const double c5 = 6.0 * dp(axis) / T5 - (3.0 * v0(axis) + 3.0 * v1(axis)) / T4
++                        - (0.5 * a0(axis) - 0.5 * a1(axis)) / T3;
++      Eigen::Matrix<double, 6, 1>* coeff = axis == 0 ? &cx : (axis == 1 ? &cy : &cz);
++      (*coeff) << c0, c1, c2, c3, c4, c5;
++    }
++    poly_traj.reset();
++    poly_traj.addSegment(Polynomial(cx, cy, cz, T));
++  };
++
++  // Keep callers from entering the zero-sized Eigen system below.  The
++  // exploration planner normally repairs a one-point path before reaching
++  // here, but this utility is also used by standalone trajectory code.
++  if (seg_num <= 0 || positions.rows() != seg_num + 1 || positions.cols() < 3) {
++    if (positions.rows() >= 1 && positions.cols() >= 3) {
++      const Eigen::Vector3d p0 = positions.row(0).head<3>();
++      const Eigen::Vector3d p1 = positions.rows() > 1 ? positions.row(1).head<3>() : p0;
++      add_one_segment(p0, p1, start_vel, end_vel, start_acc, end_acc, 0.2);
++    } else {
++      std::cerr << "PolynomialTraj: invalid waypoint/time dimensions" << std::endl;
++    }
++    return;
++  }
++
++  if (seg_num == 1) {
++    add_one_segment(positions.row(0).head<3>(), positions.row(1).head<3>(),
++                    start_vel, end_vel, start_acc, end_acc, times(0));
++    return;
++  }
++
++  // Never let an invalid or vanishing segment duration reach the matrix
++  // inverse below.  This also covers duplicate viewpoints produced by a
++  // planner that has not gone through the normal exploration path.
++  Eigen::VectorXd safe_times = times;
++  for (int k = 0; k < seg_num; ++k) {
++    if (!std::isfinite(safe_times(k)) || safe_times(k) < 0.2)
++      safe_times(k) = 0.2;
++  }
++
+   // Helper to construct the mapping matrix
+   const static auto Factorial = [](int x) {
+     int fac = 1;
+@@ -58,7 +121,7 @@ void PolynomialTraj::waypointsTraj(const Eigen::MatrixXd& positions, const Eigen
+     for (int i = 0; i < 3; i++) {
+       Ab(2 * i, i) = Factorial(i);
+       for (int j = i; j < 6; j++)
+-        Ab(2 * i + 1, j) = Factorial(j) / Factorial(j - i) * pow(times(k), j - i);
++        Ab(2 * i + 1, j) = Factorial(j) / Factorial(j - i) * pow(safe_times(k), j - i);
+     }
+     A.block(k * 6, k * 6, 6, 6) = Ab;
+   }
+@@ -108,7 +171,7 @@ void PolynomialTraj::waypointsTraj(const Eigen::MatrixXd& positions, const Eigen
+     for (int i = 3; i < 6; i++)
+       for (int j = 3; j < 6; j++) {
+         Q(k * 6 + i, k * 6 + j) =
+-            i * (i - 1) * (i - 2) * j * (j - 1) * (j - 2) / (i + j - 5) * pow(times(k), (i + j - 5));
++            i * (i - 1) * (i - 2) * j * (j - 1) * (j - 2) / (i + j - 5) * pow(safe_times(k), (i + j - 5));
+       }
+ 
+   // Matrix that maps d'=[df,dp] to jerk
+@@ -150,7 +213,7 @@ void PolynomialTraj::waypointsTraj(const Eigen::MatrixXd& positions, const Eigen
+ 
+   poly_traj.reset();
+   for (int i = 0; i < seg_num; i++) {
+-    Polynomial poly(Px.segment<6>(i * 6), Py.segment<6>(i * 6), Pz.segment<6>(i * 6), times[i]);
++    Polynomial poly(Px.segment<6>(i * 6), Py.segment<6>(i * 6), Pz.segment<6>(i * 6), safe_times[i]);
+     poly_traj.addSegment(poly);
+     // poly_coeff.block(i, 0, 1, 6) = ;
+     // poly_coeff.block(i, 6, 1, 6) = Py.segment(i * 6, 6).transpose();
+@@ -475,4 +538,4 @@ void PolynomialTraj::waypointsTraj(const Eigen::MatrixXd& positions, const Eigen
+ 
+ //   return poly_traj;
+ // }
+-}
+\ No newline at end of file
++}
+diff --git a/swarm_exploration/exploration_manager/launch/swarm_exploration_multi.launch b/swarm_exploration/exploration_manager/launch/swarm_exploration_multi.launch
+new file mode 100644
+index 0000000..cc432f0
+--- /dev/null
++++ b/swarm_exploration/exploration_manager/launch/swarm_exploration_multi.launch
+@@ -0,0 +1,61 @@
++<launch>
++
++  <!-- remap from="/map_generator/global_cloud" to="/cloud_registered"/ -->
++  <!-- size of map, change the size in x, y, z according to your application -->
++  <arg name="map_size_x" value="26"/> <!-- 地图范围 -->
++  <arg name="map_size_y" value="26"/>
++  <arg name="map_size_z" value=" 3.0"/>
++
++  <!-- Global odom prefix -->
++  <arg name="odom_prefix" value="/lidar_slam/odom" />  <!-- mavros_relay -->
++  <arg name="drone_num" value="3" />
++  <arg name="simulation" default="px4"/> <!---->
++
++    <!-- Map generation -->
++  <!-- <node pkg ="map_generator" name ="map_pub" type ="map_pub" output = "screen" args="$(find map_generator)/resource/office.pcd">    
++  </node> -->
++  <!--
++  <node pkg ="map_generator" name ="map_pub" type ="map_pub" output = "screen" args="$(find map_generator)/resource/my_world.pcd">    
++  </node>
++  -->
++
++  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
++    <arg name="drone_id" value="1"/>
++    <arg name="init_x"   value="0"/>
++    <arg name="init_y"   value="0"/>  <!-- -1.5 -->
++    <arg name="init_z"   value="0"/>  <!-- 1 -->
++    <arg name="map_size_x" value="$(arg map_size_x)"/>
++    <arg name="map_size_y" value="$(arg map_size_y)"/>
++    <arg name="map_size_z" value="$(arg map_size_z)"/>
++    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
++    <arg name="drone_num" value="$(arg drone_num)"/>
++    <arg name="simulation" value="$(arg simulation)"/>
++  </include>
++
++  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
++    <arg name="drone_id" value="2"/>
++    <arg name="init_x"   value="1.5"/>
++    <arg name="init_y"   value="0"/>
++    <arg name="init_z"   value="0"/>
++    <arg name="map_size_x" value="$(arg map_size_x)"/>
++    <arg name="map_size_y" value="$(arg map_size_y)"/>
++    <arg name="map_size_z" value="$(arg map_size_z)"/>
++    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
++    <arg name="drone_num" value="$(arg drone_num)"/>
++    <arg name="simulation" value="$(arg simulation)"/>
++  </include>
++
++  <include file="$(find exploration_manager)/launch/single_drone_exploration.xml">
++    <arg name="drone_id" value="3"/>
++    <arg name="init_x"   value="0"/>
++    <arg name="init_y"   value="1.5"/>
++    <arg name="init_z"   value="0"/>
++    <arg name="map_size_x" value="$(arg map_size_x)"/>
++    <arg name="map_size_y" value="$(arg map_size_y)"/>
++    <arg name="map_size_z" value="$(arg map_size_z)"/>
++    <arg name="odom_prefix" value="$(arg odom_prefix)"/>
++    <arg name="drone_num" value="$(arg drone_num)"/>
++    <arg name="simulation" value="$(arg simulation)"/>
++  </include>
++  
++</launch>

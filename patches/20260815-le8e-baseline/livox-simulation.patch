@@ -1,0 +1,184 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index d031e37..b025214 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1,8 +1,10 @@
+ cmake_minimum_required(VERSION 2.8.3)
+ project(livox_laser_simulation)
++set(CMAKE_CXX_STANDARD 17)
++set(CMAKE_CXX_STANDARD_REQUIRED ON)
+ 
+ ## Compile as C++11, supported in ROS Kinetic and newer
+-add_compile_options(-std=c++11)
++add_compile_options(-std=c++17)
+ 
+ find_package(catkin REQUIRED COMPONENTS
+   roscpp
+diff --git a/include/livox_laser_simulation/livox_ode_multiray_shape.h b/include/livox_laser_simulation/livox_ode_multiray_shape.h
+index d0f498d..e41ed2c 100644
+--- a/include/livox_laser_simulation/livox_ode_multiray_shape.h
++++ b/include/livox_laser_simulation/livox_ode_multiray_shape.h
+@@ -7,7 +7,7 @@
+ #include <gazebo/physics/MultiRayShape.hh>
+ #include <gazebo/util/system.hh>
+ #include <gazebo/ode/common.h>
+-#include <ignition/math4/ignition/math.hh>
++#include <ignition/math6/ignition/math.hh>
+ 
+ namespace gazebo{
+ namespace physics{
+diff --git a/src/livox_ode_multiray_shape.cpp b/src/livox_ode_multiray_shape.cpp
+index 4459183..5ec6d4e 100644
+--- a/src/livox_ode_multiray_shape.cpp
++++ b/src/livox_ode_multiray_shape.cpp
+@@ -12,7 +12,7 @@
+ #include <gazebo/physics/ode/ODERayShape.hh>
+ #include <gazebo/physics/ode/ODEMultiRayShape.hh>
+ #include "livox_laser_simulation/livox_ode_multiray_shape.h"
+-#include <ignition/math4/ignition/math.hh>
++#include <ignition/math6/ignition/math.hh>
+ 
+ using namespace gazebo;
+ using namespace physics;
+diff --git a/src/livox_points_plugin.cpp b/src/livox_points_plugin.cpp
+index efe098e..96406a0 100644
+--- a/src/livox_points_plugin.cpp
++++ b/src/livox_points_plugin.cpp
+@@ -55,7 +55,22 @@ void LivoxPointsPlugin::Load(gazebo::sensors::SensorPtr _parent, sdf::ElementPtr
+     auto curr_scan_topic = sdf->Get<std::string>("ros_topic");
+     ROS_INFO_STREAM("ros topic name:" << curr_scan_topic);
+     ros::init(argc, argv, curr_scan_topic);
+-    rosNode.reset(new ros::NodeHandle);
++    //rosNode.reset(new ros::NodeHandle);
++    std::string robot_namespace = "";
++    if (sdf->HasElement("robotNamespace")) {
++	robot_namespace = sdf->Get<std::string>("robotNamespace");
++    }
++    if (robot_namespace.empty()) {
++        std::string scoped_name = _parent->ScopedName();
++        for (int i = 0; i <= 9; ++i) {
++            if (scoped_name.find("iris" + std::to_string(i)) != std::string::npos ||
++                scoped_name.find("uav" + std::to_string(i)) != std::string::npos) {
++                robot_namespace = "/uav" + std::to_string(i);
++                break;
++            }
++        }
++    }
++    rosNode.reset(new ros::NodeHandle(robot_namespace));
+     rosPointPub = rosNode->advertise<sensor_msgs::PointCloud>(curr_scan_topic, 5);
+ 
+     raySensor = _parent;
+diff --git a/urdf/livox_mid360.xacro b/urdf/livox_mid360.xacro
+index 5ea2a4d..ae74590 100644
+--- a/urdf/livox_mid360.xacro
++++ b/urdf/livox_mid360.xacro
+@@ -89,7 +89,5 @@
+     </joint>
+     <xacro:Livox_Mid_gazebo_sensor name="${name}" visualize="${visualize}"/>
+   </xacro:macro>
+-    <xacro:Livox_Mid40 name="livox"/>
+-  <xacro:include filename="$(find livox_laser_simulation)/urdf/standardrobots_oasis300.xacro"/>
+-  <xacro:link_oasis name="oasis"/>
++  
+ </robot>
+diff --git a/urdf/livox_mid360 (copy).xacro b/urdf/livox_mid360 (copy).xacro
+new file mode 100644
+index 0000000..5ea2a4d
+--- /dev/null
++++ b/urdf/livox_mid360 (copy).xacro	
+@@ -0,0 +1,95 @@
++<?xml version="1.0"?>
++<robot xmlns:xacro="http://ros.org/wiki/xacro">
++
++  <xacro:property name="M_PI" value="3.14159"/> 
++  <xacro:property name="laser_min_range" value="0.1"/>
++  <xacro:property name="laser_max_range" value="200.0"/>
++  <xacro:property name="ros_topic" value="scan"/>
++  <xacro:property name="samples" value="24000"/>
++  <xacro:property name="downsample" value="1"/>
++  
++  <xacro:macro name="null_inertial">
++    <inertial>
++      <mass value="0.1"/>
++    <inertia ixx="0.01" ixy="0" ixz="0"
++          iyy="0.01" iyz="0"
++          izz="0.01"/>
++    </inertial>
++  </xacro:macro>
++  <xacro:macro name="Livox_Mid_gazebo_sensor" params="visualize:=True update_rate:=10 resolution:=0.002 noise_mean:=0.0 noise_stddev:=0.01 name:=livox">
++    <gazebo reference="${name}">
++      <sensor type="ray" name="laser_${name}">
++        <pose>0 0 0 0 0 0</pose>
++        <visualize>${visualize}</visualize>
++        <update_rate>${update_rate}</update_rate>
++        <!-- This ray plgin is only for visualization. -->
++        <plugin name="gazebo_ros_laser_controller" filename="liblivox_laser_simulation.so">
++			<ray>
++			  <scan>
++				<horizontal>
++				<samples>100</samples>
++				<resolution>1</resolution>
++				<min_angle>${0}</min_angle>
++				<max_angle>${2*M_PI}</max_angle>
++				</horizontal>
++				<vertical>
++				<samples>360</samples>
++				<resolution>1</resolution>
++				<min_angle>${-7.22/180*M_PI}</min_angle>
++				<max_angle>${55.22/180*M_PI}</max_angle>
++				</vertical>
++			  </scan>
++			  <range>
++				<min>${laser_min_range}</min>
++				<max>${laser_max_range}</max>
++				<resolution>${resolution}</resolution>
++			  </range>
++			  <noise>
++				<type>gaussian</type>
++				<mean>${noise_mean}</mean>
++				<stddev>${noise_stddev}</stddev>
++			  </noise>
++			</ray>
++          <visualize>${visualize}</visualize>
++		  <samples>${samples}</samples>
++		  <downsample>${downsample}</downsample>
++		  <csv_file_name>package://livox_laser_simulation/scan_mode/mid360.csv</csv_file_name>
++		  <ros_topic>${ros_topic}</ros_topic>
++        </plugin>
++      </sensor>
++    </gazebo>
++  </xacro:macro>
++
++
++  <xacro:macro name="Livox_Mid40" params="visualize:=True name:=livox">
++    <link name="${name}_base">
++      <xacro:null_inertial/>
++      <visual> 
++        <origin xyz="0.00 0 0.0" rpy="0 0 0"/>
++        <geometry>
++          <mesh filename="package://livox_laser_simulation/meshes/livox_mid40.dae">
++          </mesh>
++        </geometry>
++      </visual>
++
++      <collision>
++		  <origin xyz="0 0 0" rpy="0 0 0" /> <geometry> <mesh 
++		  filename="package://livox_laser_simulation/meshes/livox_mid40.dae"> 
++		  </mesh> </geometry>
++      </collision>
++    </link>
++    <link name="${name}">
++      <xacro:null_inertial/>
++    </link>
++
++    <joint name="${name}_to_${name}_base_joint" type="fixed">
++      <parent link="${name}_base"/>
++      <child link="${name}"/>
++      <origin rpy="0 0 0" xyz="0.0 1.0 0.2"/>
++    </joint>
++    <xacro:Livox_Mid_gazebo_sensor name="${name}" visualize="${visualize}"/>
++  </xacro:macro>
++    <xacro:Livox_Mid40 name="livox"/>
++  <xacro:include filename="$(find livox_laser_simulation)/urdf/standardrobots_oasis300.xacro"/>
++  <xacro:link_oasis name="oasis"/>
++</robot>

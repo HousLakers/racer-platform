@@ -1,0 +1,145 @@
+diff --git a/launch/multi_uav_mavros_sitl.launch b/launch/multi_uav_mavros_sitl.launch
+index c699d72..fe76d33 100644
+--- a/launch/multi_uav_mavros_sitl.launch
++++ b/launch/multi_uav_mavros_sitl.launch
+@@ -5,7 +5,7 @@
+     <!-- vehicle model and world -->
+     <arg name="est" default="ekf2"/>
+     <arg name="vehicle" default="iris"/>
+-    <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
++    <arg name="world" default="/home/houslakers/pillar.world"/>
+     <!-- gazebo configs -->
+     <arg name="gui" default="true"/>
+     <arg name="debug" default="false"/>
+@@ -27,7 +27,7 @@
+         <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+             <arg name="x" value="0"/>
+-            <arg name="y" value="0"/>
++            <arg name="y" value="0"/> <!-- -1.5 -->
+             <arg name="z" value="0"/>
+             <arg name="R" value="0"/>
+             <arg name="P" value="0"/>
+@@ -47,15 +47,22 @@
+             <arg name="tgt_system" value="$(eval 1 + arg('ID'))"/>
+             <arg name="tgt_component" value="1"/>
+         </include>
++        
++        <!-- 【使用 rosparam 强覆盖 MAVROS 内部 YAML 默认值，彻底杀掉 10000Hz 垃圾 TF】 -->
++        <rosparam param="mavros/tf/send">false</rosparam>
++        <rosparam param="mavros/static_tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send_fcu">false</rosparam>
++        <rosparam param="mavros/global_position/tf/send">false</rosparam>
++        <rosparam param="mavros/imu/tf/send">false</rosparam>
+     </group>
+-    <!-- UAV1 -->
++    
++    <!--
+     <group ns="uav1">
+-        <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="1"/>
+         <arg name="fcu_url" default="udp://:14541@localhost:14581"/>
+-        <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+-            <arg name="x" value="1"/>
++            <arg name="x" value="1.5"/>
+             <arg name="y" value="0"/>
+             <arg name="z" value="0"/>
+             <arg name="R" value="0"/>
+@@ -69,23 +76,29 @@
+             <arg name="video_uri" value="$(eval 5600 + arg('ID'))"/>
+             <arg name="mavlink_cam_udp_port" value="$(eval 14530 + arg('ID'))"/>
+         </include>
+-        <!-- MAVROS -->
+         <include file="$(find mavros)/launch/px4.launch">
+             <arg name="fcu_url" value="$(arg fcu_url)"/>
+             <arg name="gcs_url" value=""/>
+             <arg name="tgt_system" value="$(eval 1 + arg('ID'))"/>
+             <arg name="tgt_component" value="1"/>
+         </include>
++        
++        <rosparam param="mavros/tf/send">false</rosparam>
++        <rosparam param="mavros/static_tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send_fcu">false</rosparam>
++        <rosparam param="mavros/global_position/tf/send">false</rosparam>
++        <rosparam param="mavros/imu/tf/send">false</rosparam>
+     </group>
+-    <!-- UAV2 -->
++    -->
++    
++    <!--
+     <group ns="uav2">
+-        <!-- MAVROS and vehicle configs -->
+         <arg name="ID" value="2"/>
+         <arg name="fcu_url" default="udp://:14542@localhost:14582"/>
+-        <!-- PX4 SITL and vehicle spawn -->
+         <include file="$(find px4)/launch/single_vehicle_spawn.launch">
+             <arg name="x" value="0"/>
+-            <arg name="y" value="1"/>
++            <arg name="y" value="1.5"/>
+             <arg name="z" value="0"/>
+             <arg name="R" value="0"/>
+             <arg name="P" value="0"/>
+@@ -98,14 +111,46 @@
+             <arg name="video_uri" value="$(eval 5600 + arg('ID'))"/>
+             <arg name="mavlink_cam_udp_port" value="$(eval 14530 + arg('ID'))"/>
+         </include>
+-        <!-- MAVROS -->
+         <include file="$(find mavros)/launch/px4.launch">
+             <arg name="fcu_url" value="$(arg fcu_url)"/>
+             <arg name="gcs_url" value=""/>
+             <arg name="tgt_system" value="$(eval 1 + arg('ID'))"/>
+             <arg name="tgt_component" value="1"/>
+         </include>
++        
++        <rosparam param="mavros/tf/send">false</rosparam>
++        <rosparam param="mavros/static_tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send">false</rosparam>
++        <rosparam param="mavros/local_position/tf/send_fcu">false</rosparam>
++        <rosparam param="mavros/global_position/tf/send">false</rosparam>
++        <rosparam param="mavros/imu/tf/send">false</rosparam>
+     </group>
++    -->
++    <!-- 在 launch 文件末尾加上这 3 句，把各自飞机的 base_link 稳稳绑定到 Swarm-LIO 的里程计树上 -->
++    <!--
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_0" 
++        args="0 0 0 0 0 0 quad1_imu_propagation uav0/base_link" />
++    
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_1" 
++        args="0 0 0 0 0 0 quad2_imu_propagation uav1/base_link" />
++    -->
++    <!--
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_base_2" 
++        args="0 0 0 0 0 0 quad3_imu_propagation uav2/base_link" />
++    -->
++        
++    <!-- 【新增：将雷达视角跟 base_link 绑定（Z=0.13），彻底拼合整棵大树！】 -->
++    <!--
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_lidar_0" 
++        args="0 0 0.13 0 0 0 uav0/base_link iris0::livox_base" />
++    
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_lidar_1" 
++        args="0 0 0.13 0 0 0 uav1/base_link iris1::livox_base" />
++    -->
++    <!--
++    <node pkg="tf2_ros" type="static_transform_publisher" name="tf_lidar_2" 
++        args="0 0 0.13 0 0 0 uav2/base_link iris2::livox_base" />
++    -->
+ </launch>
+ <!-- to add more UAVs (up to 10):
+ Increase the id
+diff --git a/launch/posix_sitl.launch b/launch/posix_sitl.launch
+index 25afb71..9220239 100644
+--- a/launch/posix_sitl.launch
++++ b/launch/posix_sitl.launch
+@@ -12,7 +12,7 @@
+     <!-- vehicle model and world -->
+     <arg name="est" default="ekf2"/>
+     <arg name="vehicle" default="iris"/>
+-    <arg name="world" default="$(find mavlink_sitl_gazebo)/worlds/empty.world"/>
++    <arg name="world" default="/home/houslakers/pillar.world"/> <!-- $(find mavlink_sitl_gazebo)/worlds/empty.world -->
+     <arg name="sdf" default="$(find mavlink_sitl_gazebo)/models/$(arg vehicle)/$(arg vehicle).sdf"/>
+     <env name="PX4_SIM_MODEL" value="gazebo-classic_$(arg vehicle)" />
+ 

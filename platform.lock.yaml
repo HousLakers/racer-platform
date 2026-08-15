@@ -42,6 +42,10 @@ simulation:
     gazebo_classic_submodule_tracked_changes: 2
     gazebo_classic_submodule_patch_sha256: a109085ef300e3bbc109f65b361560b4444c7cf63312d53556049bdf50caf2fc
     patch_artifact: TODO_PX4_PATCH_ARTIFACT
+    candidate_patch_artifact: patches/20260815-le8e-baseline/px4-superproject.patch
+    candidate_submodule_patch_artifact: patches/20260815-le8e-baseline/px4-gazebo-classic.patch
+    candidate_patch_sha256: 5fd7dec37cd4b4a78481bc92af012b56bb1fbcbf65036557e1765829164134b9
+    candidate_submodule_patch_sha256: a109085ef300e3bbc109f65b361560b4444c7cf63312d53556049bdf50caf2fc
   mavros:
     source: ros_apt_binary
     version: 1.20.1
@@ -76,6 +80,8 @@ perception:
     untracked_files: 92
     worktree_patch_sha256: bd192abe37756410e26bd62cc2def5e9267ef7ac7fb3dde93bcfabd6b393ef09
     patch_artifact: TODO_SWARM_LIO_PATCH_ARTIFACT
+    candidate_patch_artifact: patches/20260815-le8e-baseline/swarm-lio-source.patch
+    candidate_patch_sha256: 470fd8daff95403966a0f504eb4954c06278fd86da3c51cb5a6e745a2a03b5d2
   livox_laser_simulation:
     source_path_observed: /home/houslakers/swarm_ws/src/livox_laser_simulation
     commit: 1cce1073633a062b92e30243a4c2920e45551bb5
@@ -84,6 +90,8 @@ perception:
     untracked_files: 1
     worktree_patch_sha256: 85dca418fe4eeee2482a100b6af04a14323fcd3990cbba375cc984c269e7df76
     patch_artifact: TODO_LIVOX_SIM_PATCH_ARTIFACT
+    candidate_patch_artifact: patches/20260815-le8e-baseline/livox-simulation.patch
+    candidate_patch_sha256: 24bbf0383ff480c785d414897877199f9a6f075e3621b61f9bffa1d3f27215ef
 
 planner:
   racer:
@@ -95,6 +103,8 @@ planner:
     untracked_files: 86
     worktree_patch_sha256: e46b74ed61ae4a24745d9a54d52ad474c78b7c2f67c0e626f92d5a40eca456a4
     patch_artifact: TODO_RACER_PATCH_ARTIFACT
+    candidate_patch_artifact: patches/20260815-le8e-baseline/racer-le8e-source.patch
+    candidate_patch_sha256: 216eb7f716e93088d6da42c9306fe33a70655bf9d99f953a22e2bab00985ff34
     critical_file_hashes_match_handoff: true
   lkh:
     version: 3.0.6

@@ -1,0 +1,5 @@
+24bbf0383ff480c785d414897877199f9a6f075e3621b61f9bffa1d3f27215ef  /home/houslakers/auto_tune_racer/racer-platform/patches/20260815-le8e-baseline/livox-simulation.patch
+a109085ef300e3bbc109f65b361560b4444c7cf63312d53556049bdf50caf2fc  /home/houslakers/auto_tune_racer/racer-platform/patches/20260815-le8e-baseline/px4-gazebo-classic.patch
+5fd7dec37cd4b4a78481bc92af012b56bb1fbcbf65036557e1765829164134b9  /home/houslakers/auto_tune_racer/racer-platform/patches/20260815-le8e-baseline/px4-superproject.patch
+216eb7f716e93088d6da42c9306fe33a70655bf9d99f953a22e2bab00985ff34  /home/houslakers/auto_tune_racer/racer-platform/patches/20260815-le8e-baseline/racer-le8e-source.patch
+470fd8daff95403966a0f504eb4954c06278fd86da3c51cb5a6e745a2a03b5d2  /home/houslakers/auto_tune_racer/racer-platform/patches/20260815-le8e-baseline/swarm-lio-source.patch

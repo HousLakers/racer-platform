@@ -21,6 +21,10 @@
 3. `TODO_SWARM_LIO_PATCH_ARTIFACT`：Swarm-LIO2 有 212 个 tracked 变化和 92 个 untracked 文件；其中很多是 vendored Livox SDK mode/build 噪声，但 `swarm_lio/src`、消息、launch 和脚本也有实质修改。需剔除日志/build 产物后形成最小 patch 和资产 manifest。
 4. `TODO_LIVOX_SIM_PATCH_ARTIFACT`：Livox 仿真插件有 5 个 tracked 改动及 1 个 untracked xacro，需形成 patch 并说明模型/传感器时序语义。
 5. `TODO_RACER_PATCH_ARTIFACT`：RACER 有 15 个 tracked 改动和 86 个 untracked 文件。需从备份、复制文件、地图和 ODT 中分离真正的源码/launch patch；不能把整个脏工作树直接上传。
+
+上述第 2--5 项已在 `patches/20260815-le8e-baseline/` 生成候选 patch，并通过对应
+base commit 的 `git apply --check`。在 sol/维护者完成内容审查、补丁应用顺序和构建
+验证前，`TODO_*_PATCH_ARTIFACT` 仍保持未关闭。
 6. `TODO_LKH_SOURCE_ORIGIN`：确认 LKH 3.0.6 tarball 的原始 URL、许可、原始归档 SHA256 和构建方式。当前仅确认本机可执行文件 SHA256。
 7. `TODO_APT_SNAPSHOT_OR_ARCHIVE`：记录 Ubuntu、ROS、OSRF apt source/key 和可长期取回的 snapshot；仅有 `package=version` 不保证未来仓库仍保留对应包。
 8. `TODO_PYTHON_WHEELHOUSE_OR_HASH_LOCK`：为 Python requirements 生成带 hash 的锁或受控 wheelhouse；当前只锁版本。

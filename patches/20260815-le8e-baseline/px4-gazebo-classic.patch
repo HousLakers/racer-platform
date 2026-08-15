@@ -1,0 +1,231 @@
+diff --git a/models/iris/iris.sdf.jinja b/models/iris/iris.sdf.jinja
+index a59bae9..2ea91b4 100644
+--- a/models/iris/iris.sdf.jinja
++++ b/models/iris/iris.sdf.jinja
+@@ -34,6 +34,16 @@
+           </friction>
+         </surface>
+       </collision>
++      <sensor name='base_contact_sensor' type='contact'>
++        <always_on>true</always_on>
++        <update_rate>100</update_rate>
++        <contact><collision>base_link_inertia_collision</collision></contact>
++        <plugin name='base_contact_ros' filename='libgazebo_ros_bumper.so'>
++          <robotNamespace>/uav{{ (mavlink_id | int) - 1 }}</robotNamespace>
++          <bumperTopicName>gazebo/contacts</bumperTopicName>
++          <frameName>base_link</frameName>
++        </plugin>
++      </sensor>
+       <visual name='base_link_inertia_visual'>
+         <pose>0 0 0 0 0 0</pose>
+         <geometry>
+@@ -116,6 +126,14 @@
+           </friction>
+         </surface>
+       </collision>
++      <sensor name='rotor_0_contact_sensor' type='contact'>
++        <always_on>true</always_on><update_rate>100</update_rate>
++        <contact><collision>rotor_0_collision</collision></contact>
++        <plugin name='rotor_0_contact_ros' filename='libgazebo_ros_bumper.so'>
++          <robotNamespace>/uav{{ (mavlink_id | int) - 1 }}</robotNamespace>
++          <bumperTopicName>gazebo/contacts</bumperTopicName><frameName>base_link</frameName>
++        </plugin>
++      </sensor>
+       <visual name='rotor_0_visual'>
+         <pose>0 0 0 0 0 0</pose>
+         <geometry>
+@@ -181,6 +199,14 @@
+           </friction>
+         </surface>
+       </collision>
++      <sensor name='rotor_1_contact_sensor' type='contact'>
++        <always_on>true</always_on><update_rate>100</update_rate>
++        <contact><collision>rotor_1_collision</collision></contact>
++        <plugin name='rotor_1_contact_ros' filename='libgazebo_ros_bumper.so'>
++          <robotNamespace>/uav{{ (mavlink_id | int) - 1 }}</robotNamespace>
++          <bumperTopicName>gazebo/contacts</bumperTopicName><frameName>base_link</frameName>
++        </plugin>
++      </sensor>
+       <visual name='rotor_1_visual'>
+         <pose>0 0 0 0 0 0</pose>
+         <geometry>
+@@ -246,6 +272,14 @@
+           </friction>
+         </surface>
+       </collision>
++      <sensor name='rotor_2_contact_sensor' type='contact'>
++        <always_on>true</always_on><update_rate>100</update_rate>
++        <contact><collision>rotor_2_collision</collision></contact>
++        <plugin name='rotor_2_contact_ros' filename='libgazebo_ros_bumper.so'>
++          <robotNamespace>/uav{{ (mavlink_id | int) - 1 }}</robotNamespace>
++          <bumperTopicName>gazebo/contacts</bumperTopicName><frameName>base_link</frameName>
++        </plugin>
++      </sensor>
+       <visual name='rotor_2_visual'>
+         <pose>0 0 0 0 0 0</pose>
+         <geometry>
+@@ -311,6 +345,14 @@
+           </friction>
+         </surface>
+       </collision>
++      <sensor name='rotor_3_contact_sensor' type='contact'>
++        <always_on>true</always_on><update_rate>100</update_rate>
++        <contact><collision>rotor_3_collision</collision></contact>
++        <plugin name='rotor_3_contact_ros' filename='libgazebo_ros_bumper.so'>
++          <robotNamespace>/uav{{ (mavlink_id | int) - 1 }}</robotNamespace>
++          <bumperTopicName>gazebo/contacts</bumperTopicName><frameName>base_link</frameName>
++        </plugin>
++      </sensor>
+       <visual name='rotor_3_visual'>
+         <pose>0 0 0 0 0 0</pose>
+         <geometry>
+@@ -447,19 +489,21 @@
+     <plugin name='mavlink_interface' filename='libgazebo_mavlink_interface.so'>
+       <robotNamespace/>
+       <imuSubTopic>/imu</imuSubTopic>
++      <gpsSubTopic>/gps</gpsSubTopic>
+       <magSubTopic>/mag</magSubTopic>
+       <baroSubTopic>/baro</baroSubTopic>
+       <mavlink_addr>INADDR_ANY</mavlink_addr>
+       <mavlink_tcp_port>{{ mavlink_tcp_port }}</mavlink_tcp_port>
+       <mavlink_udp_port>{{ mavlink_udp_port }}</mavlink_udp_port>
+-      <serialEnabled>{{ serial_enabled }}</serialEnabled>
+-      <serialDevice>{{ serial_device }}</serialDevice>
+-      <baudRate>{{ serial_baudrate }}</baudRate>
++      <mavlink_id>{{ mavlink_id }}</mavlink_id>
++      <serialEnabled>0</serialEnabled>
++      <serialDevice>/dev/ttyACM0</serialDevice>
++      <baudRate>921600</baudRate>
+       <qgc_addr>INADDR_ANY</qgc_addr>
+       <qgc_udp_port>14550</qgc_udp_port>
+       <sdk_addr>INADDR_ANY</sdk_addr>
+       <sdk_udp_port>14540</sdk_udp_port>
+-      <hil_mode>{{ hil_mode }}</hil_mode>
++      <hil_mode>0</hil_mode>
+       <hil_state_level>0</hil_state_level>
+       <send_vision_estimation>0</send_vision_estimation>
+       <send_odometry>1</send_odometry>
+@@ -569,5 +613,111 @@
+       <linkName>/imu_link</linkName>
+       <imuTopic>/imu</imuTopic>
+     </plugin>
++    <!-- ======================================================== -->
++    <!-- 完美复刻：蓝色承载平台 -->
++    <!-- ======================================================== -->
++    <link name='link_platform'>
++      <pose>0 0 0.05 0 0 0</pose>
++      <inertial>
++        <mass>0.1</mass>
++        <inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz></inertia>
++      </inertial>
++      <visual name='visual'>
++        <geometry><box><size>0.15 0.1 0.1</size></box></geometry>
++        <material><script><name>Gazebo/Blue</name></script></material>
++      </visual>
++      <collision name='collision'>
++        <geometry><box><size>0.15 0.1 0.1</size></box></geometry>
++      </collision>
++    </link>
++    <joint name='drone_to_platform_joint' type='fixed'>
++      <parent>base_link</parent>
++      <child>link_platform</child>
++    </joint>
++
++    <!-- ======================================================== -->
++    <!-- 完美复刻：Mid360 雷达 (相对平台Z轴上移0.08，总Z=0.13) -->
++    <!-- ======================================================== -->
++    <link name='livox_base'>
++      <pose>0 0 0.13 0 0 0</pose>
++      <inertial>
++        <mass>0.1</mass>
++        <inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz></inertia>
++      </inertial>
++      <visual name='visual'>
++        <!-- 如果你之前的 meshes 没拷过来，这里用圆柱体代替，避免 Gazebo 报错变白块 -->
++        <geometry><cylinder><radius>0.03</radius><length>0.06</length></cylinder></geometry>
++        <material><script><name>Gazebo/White</name></script></material>
++      </visual>
++      <!-- 把原有的 name="laser_livox" 改为带有 Jinja 变量的动态名称： -->
++      <sensor type="ray" name="laser_livox_{{ (mavlink_id | int) - 1 }}">
++        <pose>0 0 0 0 0 0</pose>
++        <visualize>true</visualize>
++        <update_rate>10</update_rate>
++        <plugin name="gazebo_ros_laser_controller" filename="liblivox_laser_simulation.so">
++          <!-- 【关键新增】：添加命名空间标签，留空则自动继承 ROS 的 group ns (例如 /uav0) -->
++          <robotNamespace></robotNamespace>
++          
++          <!-- 【核心新增：动态绑定各机的独立 LiDAR 坐标系名称，防止多机 TF 抢夺覆盖！】 -->
++          <frameName>uav{{ (mavlink_id | int) - 1 }}/laser_livox</frameName>
++          
++          <ray>
++            <scan>
++              <horizontal><samples>100</samples><resolution>1</resolution><min_angle>0</min_angle><max_angle>6.28318</max_angle></horizontal>
++              <vertical><samples>360</samples><resolution>1</resolution><min_angle>-0.126</min_angle><max_angle>0.969</max_angle></vertical>
++            </scan>
++            <range><min>0.1</min><max>200.0</max><resolution>0.002</resolution></range>
++            <noise><type>gaussian</type><mean>0.0</mean><stddev>0.01</stddev></noise>
++          </ray>
++          <samples>24000</samples>
++          <downsample>1</downsample>
++          <csv_file_name>/home/houslakers/swarm_ws/src/livox_laser_simulation/scan_mode/mid360.csv</csv_file_name>
++          <!-- 【关键修改】：去掉了开头的 /，改成相对路径 livox/scan -->
++          <ros_topic>livox/scan</ros_topic>
++        </plugin>
++      </sensor>
++    </link>
++    <joint name='lidar_platform_joint' type='fixed'>
++      <parent>link_platform</parent>
++      <child>livox_base</child>
++    </joint>
++
++    <!-- ======================================================== -->
++    <!-- 完美复刻：绿色 IMU (相对平台前偏0.05, Z上移0.065, 总坐标: 0.05 0 0.115) -->
++    <!-- ======================================================== -->
++    <link name='imu_base_link'>
++      <pose>0.05 0 0.115 0 0 0</pose>
++      <inertial>
++        <mass>0.001</mass>
++        <inertia><ixx>0.001</ixx><iyy>0.001</iyy><izz>0.001</izz></inertia>
++      </inertial>
++      <visual name='visual'>
++        <geometry><box><size>0.03 0.03 0.03</size></box></geometry>
++        <material><script><name>Gazebo/Green</name></script></material>
++      </visual>
++      <sensor name="imu_sensor" type="imu">
++        <always_on>true</always_on>
++        <update_rate>200</update_rate>
++        <visualize>true</visualize>
++        <topic>livox/imu</topic>
++        <plugin filename="libgazebo_ros_imu_sensor.so" name="imu_plugin">
++          <!-- 【关键修改】：去掉了开头的 /，改用相对路径 -->
++          <topicName>livox/imu</topicName>
++          <bodyName>imu_base_link</bodyName>
++          <updateRateHZ>200.0</updateRateHZ>
++          <gaussianNoise>0.00329</gaussianNoise>
++          <xyzOffset>0 0 0</xyzOffset>
++          <rpyOffset>0 0 0</rpyOffset>
++          <!-- 【核心修改】：把原来的 imu_base_link 改为带编号前缀 -->
++          <frameName>uav{{ (mavlink_id | int) - 1 }}/imu_base_link</frameName>
++        </plugin>
++      </sensor>
++    </link>
++    <joint name='imu_platform_joint' type='fixed'>
++      <parent>link_platform</parent>
++      <child>imu_base_link</child>
++    </joint>
++    <!-- ======================================================== -->
++
+   </model>
+ </sdf>
+diff --git a/worlds/empty.world b/worlds/empty.world
+index 08922a0..7cab7c4 100644
+--- a/worlds/empty.world
++++ b/worlds/empty.world
+@@ -1,6 +1,7 @@
+ <?xml version="1.0" ?>
+ <sdf version="1.5">
+   <world name="default">
++    <plugin name="ros_link_attacher" filename="libgazebo_ros_link_attacher.so"/>
+     <!-- A global light source -->
+     <include>
+       <uri>model://sun</uri>

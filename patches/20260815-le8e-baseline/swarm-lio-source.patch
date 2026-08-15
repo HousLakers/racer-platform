@@ -1,0 +1,632 @@
+diff --git a/swarm_lio/CMakeLists.txt b/swarm_lio/CMakeLists.txt
+index 04ea002..0f50366 100644
+--- a/swarm_lio/CMakeLists.txt
++++ b/swarm_lio/CMakeLists.txt
+@@ -73,6 +73,7 @@ include_directories(
+ 
+ add_message_files(
+   FILES
++  QuadStatePub.msg
+   Pose6D.msg
+   States.msg
+ )
+@@ -94,6 +95,8 @@ add_executable(swarm_lio
+         src/preprocess.cpp
+         src/MultiUAV.cpp
+         )
++add_dependencies(swarm_lio ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
++add_dependencies(swarm_lio swarm_msgs_generate_messages)
+ 
+ target_link_libraries(swarm_lio
+         ${catkin_LIBRARIES}
+diff --git a/swarm_lio/src/IMUProcessing.hpp b/swarm_lio/src/IMUProcessing.hpp
+index de6943c..f46bdfa 100644
+--- a/swarm_lio/src/IMUProcessing.hpp
++++ b/swarm_lio/src/IMUProcessing.hpp
+@@ -211,15 +211,10 @@ ImuProcess::propagation_and_undist(const MeasureGroup &meas, StatesGroup &state_
+     double imu_end_time = v_imu.back()->header.stamp.toSec();
+     double pcl_beg_time, pcl_end_time;
+ 
+-    if (lidar_type == SIM) {
+-        pcl_beg_time = last_lidar_end_time_;
+-        pcl_end_time = meas.lidar_beg_time;
+-    } else {
+-        pcl_beg_time = meas.lidar_beg_time;
+-        /*** sort point clouds by offset time ***/
++    pcl_beg_time = meas.lidar_beg_time;
++    /*** sort point clouds by offset time ***/
+ //        sort(orig_pcl_out.points.begin(), orig_pcl_out.points.end(), time_list);
+-        pcl_end_time = pcl_beg_time + orig_pcl_out.points.back().curvature / double(1000);
+-    }
++    pcl_end_time = pcl_beg_time + orig_pcl_out.points.back().curvature / double(1000);
+ 
+ 
+     /*** Initialize IMU pose ***/
+diff --git a/swarm_lio/src/laserMapping.cpp b/swarm_lio/src/laserMapping.cpp
+index 64ade20..9739c41 100644
+--- a/swarm_lio/src/laserMapping.cpp
++++ b/swarm_lio/src/laserMapping.cpp
+@@ -651,10 +651,7 @@ bool sync_packages(MeasureGroup &meas) {
+             return false;
+         }
+         meas.lidar_beg_time = time_buffer.front(); //单位s
+-        if (lidar_type == SIM)
+-            lidar_end_time = meas.lidar_beg_time;
+-        else
+-            lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000); //单位:s
++        lidar_end_time = meas.lidar_beg_time + meas.lidar->points.back().curvature / double(1000); //单位:s
+         lidar_pushed = true;
+     }
+ 
+@@ -1275,6 +1272,12 @@ int main(int argc, char **argv) {
+     nh.param<vector<double>>("mapping/LI_extrinsic_R", extrinR, vector<double>());
+     nh.param<string>("sub_gt_pose_topic", sub_gt_pose_topic, "");
+ 
++    // ==================== 【核心新增：读取初始物理坐标】 ====================
++    double init_pos_x = 0.0, init_pos_y = 0.0, init_pos_z = 0.0;
++    nh.param<double>("mapping/init_pos_x", init_pos_x, 0.0);
++    nh.param<double>("mapping/init_pos_y", init_pos_y, 0.0);
++    nh.param<double>("mapping/init_pos_z", init_pos_z, 0.0);
++    // ====================================================================
+     nh.param<int>("multiuav/actual_uav_num", actual_uav_num, 5);
+     nh.param<int>("multiuav/frame_num_in_sliding_window", frame_num_in_sliding_window, original_frequency/10);
+     nh.param<double>("multiuav/mutual_observe_noise", mutual_observe_noise_, 0.001);
+@@ -1316,8 +1319,6 @@ int main(int argc, char **argv) {
+ 
+ 
+     topic_name_prefix = "";
+-    if(lidar_type == SIM)
+-        topic_name_prefix = "quad" + SetString(drone_id) + "/";
+ 
+     path.header.stamp = ros::Time().fromSec(lidar_end_time);
+     path.header.frame_id = topic_name_prefix + "world";
+@@ -1325,6 +1326,13 @@ int main(int argc, char **argv) {
+     offset_R_L_I << MAT_FROM_ARRAY(extrinR);
+     offset_T_L_I << VEC_FROM_ARRAY(extrinT);
+ 
++    // ==================== 【核心新增：强行覆盖原点(0,0,0)盲启动】 ====================
++    V3D init_pos(init_pos_x, init_pos_y, init_pos_z);
++    state.pos_end = init_pos;
++    imu_propagate.pos_end = init_pos;
++    position_last = init_pos;
++    cout << GREEN << "[Init Pose Injected]: UAV " << drone_id << " natively starts at (" << init_pos_x << ", " << init_pos_y << ", " << init_pos_z << ")" << RESET << endl;
++    // ==============================================================================
+     /*** variables definition ***/
+     VD(DIM_STATE) solution;
+     V3D rot_add, T_add;
+@@ -2161,4 +2169,4 @@ int main(int argc, char **argv) {
+     }
+     cout << "Exit the process." << endl;
+     return 0;
+-}
+\ No newline at end of file
++}
+diff --git a/swarm_lio/src/preprocess.cpp b/swarm_lio/src/preprocess.cpp
+index d7a914e..f8f1b57 100644
+--- a/swarm_lio/src/preprocess.cpp
++++ b/swarm_lio/src/preprocess.cpp
+@@ -417,7 +417,8 @@ void Preprocess::l515_handler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
+     pcl::fromROSMsg(*msg, pl_orig);
+     int plsize = pl_orig.size();
+     pl_surf.reserve(plsize);
+-
++    const double scan_period_ms = 1000.0 / std::max(original_freq, 1.0);
++    const double denom = std::max(plsize - 1, 1);
+     for (int i = 0; i < pl_orig.points.size(); i++) {
+ 
+         double range = pl_orig.points[i].x * pl_orig.points[i].x + pl_orig.points[i].y * pl_orig.points[i].y +
+@@ -433,7 +434,7 @@ void Preprocess::l515_handler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
+         added_pt.normal_x = pl_orig.points[i].r;
+         added_pt.normal_y = pl_orig.points[i].g;
+         added_pt.normal_z = pl_orig.points[i].b;
+-        added_pt.curvature = 0.0;
++        added_pt.curvature = scan_period_ms * double(i) / double(denom);
+         pl_surf.points.push_back(added_pt);
+     }
+ }
+@@ -458,6 +459,7 @@ void Preprocess::sim_handler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
+         added_pt.normal_x = 0;
+         added_pt.normal_y = 0;
+         added_pt.normal_z = 0;
++        // Gazebo evaluates this ray batch at one pose, so the scan is instantaneous.
+         added_pt.curvature = 0.0;
+         pl_surf.points.push_back(added_pt);
+     }
+@@ -1093,4 +1095,4 @@ bool Preprocess::edge_jump_judge(const PointCloudXYZI &pl, vector<orgtype> &type
+     }
+ 
+     return true;
+-}
+\ No newline at end of file
++}
+diff --git a/swarm_lio/config/mid360 (copy).yaml b/swarm_lio/config/mid360 (copy).yaml
+new file mode 100644
+index 0000000..838409f
+--- /dev/null
++++ b/swarm_lio/config/mid360 (copy).yaml	
+@@ -0,0 +1,72 @@
++common:
++    lid_topic: "/livox/lidar"
++    imu_topic: "/mavros/imu/data"
++    time_offset_lidar_imu: 0.0
++    drone_id: 1
++
++multiuav:
++    cluster_extraction_in_predict_region: true
++    inten_threshold: 240
++    min_high_inten_cluster_size: 4
++    min_cluster_size: 7
++    predict_region_radius: 0.5
++    temp_predict_region_radius: 0.5
++    traj_matching_start_thresh: 100.0
++    ave_match_error_thresh: 0.2
++    pos_num_in_traj: 300
++    reset_tracker_thresh: 5.0
++    valid_cluster_size_thresh: 0.5
++    valid_cluster_dist_thresh: 0.2
++    mutual_observe_noise: 0.001
++    frame_num_in_sliding_window: 3
++    actual_uav_num: 5
++    degeneration_thresh: 10.0
++
++imu_propagate:
++    enable: true
++    topic: "/lidar_slam/imu_propagate"
++    filter_acc_en: false
++
++preprocess:
++    lidar_type: 1  # mid360
++    feature_extract_en: false
++    scan_line: 4
++    blind: 0.2
++
++calibration:
++    cut_frame_en: false
++    cut_frame_num: 1
++    accumulate_frame_en: true
++    original_frequency: 30 # hz
++    gravity_align_enable: true
++    gravity_align_time: 10 # seconds
++    PX4_R_I: [0.0, 0.0, 0.0] # degree
++    PX4_p_I: [0.0, 0.0, 0.0] # meter
++    level_horizon: [0.0, 0.0, 0.0] #degree
++
++mapping:
++    imu_en: true
++    acc_cov: 0.1
++    gyr_cov: 0.1
++    b_acc_cov: 0.0001
++    b_gyr_cov: 0.0001
++    det_range: 100.0
++    LI_extrinsic_T: [ -0.019391, -0.000278,  0.080926]
++    LI_extrinsic_R: [ 1, 0, 0, 0, 1, 0, 0, 0, 1]
++    point_filter_num: 2
++    max_iteration: 4
++    filter_size_surf: 0.2
++    filter_size_map: 0.3
++    cube_side_length: 2000
++
++publish:
++    path_en: true
++    scan_publish_en: true       # false: close all the point cloud output
++    dense_publish_en: true       # false: low down the points number in a global-frame point clouds scan.
++    scan_bodyframe_pub_en: false  # true: output the point cloud scans in IMU-body-frame
++
++pcd_save:
++    pcd_save_en: false
++    pcd_resolution: 0.1
++    interval: -1                 # how many LiDAR frames saved in each pcd file;
++    # -1 : all frames will be saved in ONE pcd file, may lead to memory crash when having too many frames.
+diff --git a/swarm_lio/launch/multi_uav_swarm_lio.launch b/swarm_lio/launch/multi_uav_swarm_lio.launch
+new file mode 100644
+index 0000000..521588e
+--- /dev/null
++++ b/swarm_lio/launch/multi_uav_swarm_lio.launch
+@@ -0,0 +1,101 @@
++<?xml version="1.0"?>
++<launch>
++    <!-- 集群总机数设定 -->
++    <arg name="uav_num" default="1"/>
++
++    <!-- ==================== Drone 1 (Gazebo uav0 -> RACER ID 1) ==================== -->
++    <group ns="uav0">
++        <node pkg="swarm_lio" type="swarm_lio" name="laserMapping_quad_1" output="screen">
++            <!-- 1. 载入 YAML 基础参数 -->
++            <rosparam command="load" file="$(find swarm_lio)/config/mid360.yaml" />
++
++            <!-- 2. 【核心黑科技】：强行覆盖 YAML 里写死的参数，拒绝绝对路径和 ID 冲突！ -->
++            <param name="common/drone_id" type="int" value="1"/>
++            <param name="multiuav/actual_uav_num" type="int" value="$(arg uav_num)"/>
++            <param name="common/lid_topic" type="string" value="/uav0/livox/lidar"/>
++            <param name="common/imu_topic" type="string" value="/uav0/livox/imu"/>
++            <param name="preprocess/lidar_type" type="int" value="6"/>
++            <param name="calibration/accumulate_frame_en" type="bool" value="false"/>
++            <param name="calibration/original_frequency" type="int" value="10"/>
++            <param name="calibration/gravity_align_enable" type="bool" value="false"/>
++            <param name="calibration/gravity_align_time" type="double" value="3.0"/>
++            <rosparam param="mapping/LI_extrinsic_T">[-0.05, 0.0, 0.015]</rosparam>
++            <rosparam param="mapping/LI_extrinsic_R">[1, 0, 0, 0, 1, 0, 0, 0, 1]</rosparam>
++            <rosparam param="calibration/PX4_p_I">[0.05, 0.0, 0.115]</rosparam>
++            <param name="mapping/det_range" type="double" value="20.0"/>
++            <param name="mapping/filter_size_surf" type="double" value="0.25"/>
++            <param name="mapping/filter_size_map" type="double" value="0.30"/>
++            <param name="mapping/point_filter_num" type="int" value="1"/>
++            <param name="mapping/max_iteration" type="int" value="6"/>
++            <param name="sub_gt_pose_topic" type="string" value=""/>
++            <!-- Keep the upstream teammate Mid360/Ouster configuration. -->
++
++            <param name="multiuav/degeneration_thresh" type="int" value="1"/>
++
++            <param name="mapping/init_pos_x" type="double" value="0.0"/>
++            <param name="mapping/init_pos_y" type="double" value="0.0"/> <!-- -1.5 -->
++            <param name="mapping/init_pos_z" type="double" value="0.0"/>
++
++            <!-- 3. 输出给 RACER 的全局对齐点云与里程计 -->
++            <remap from="/cloud_registered" to="/cloud_registered_1"/>
++            <remap from="/lidar_slam/odom"  to="/lidar_slam/odom_1"/>
++            <remap from="cloud_registered"  to="/cloud_registered_1"/>
++            <remap from="odom"              to="/lidar_slam/odom_1"/>
++        </node>
++    </group>
++
++    <!-- ==================== Drone 2 (Gazebo uav1 -> RACER ID 2) ==================== -->
++    <!--
++    <group ns="uav1">
++        <node pkg="swarm_lio" type="swarm_lio" name="laserMapping_quad_2" output="screen">
++            <rosparam command="load" file="$(find swarm_lio)/config/mid360.yaml" />
++
++            <param name="common/drone_id" type="int" value="2"/>
++            <param name="multiuav/actual_uav_num" type="int" value="$(arg uav_num)"/>
++            <param name="common/lid_topic" type="string" value="/uav1/livox/lidar"/>
++            <param name="common/imu_topic" type="string" value="/uav1/livox/imu"/>
++            <param name="sub_gt_pose_topic" type="string" value=""/>
++
++            <param name="multiuav/degeneration_thresh" type="int" value="1"/>
++
++            <param name="mapping/init_pos_x" type="double" value="1.5"/>
++            <param name="mapping/init_pos_y" type="double" value="0.0"/>
++            <param name="mapping/init_pos_z" type="double" value="0.0"/>
++
++            <remap from="/cloud_registered" to="/cloud_registered_2"/>
++            <remap from="/lidar_slam/odom"  to="/lidar_slam/odom_2"/>
++            <remap from="cloud_registered"  to="/cloud_registered_2"/>
++            <remap from="odom"              to="/lidar_slam/odom_2"/>
++        </node>
++    </group>
++    -->
++
++    <!-- ==================== Drone 3 (Gazebo uav2 -> RACER ID 3) ==================== -->
++    <!--
++    <group ns="uav2">
++        <node pkg="swarm_lio" type="swarm_lio" name="laserMapping_quad_3" output="screen">
++            <rosparam command="load" file="$(find swarm_lio)/config/mid360.yaml" />
++
++            <param name="common/drone_id" type="int" value="3"/>
++            <param name="multiuav/actual_uav_num" type="int" value="$(arg uav_num)"/>
++            <param name="common/lid_topic" type="string" value="/uav2/livox/lidar"/>
++            <param name="common/imu_topic" type="string" value="/uav2/livox/imu"/>
++            <param name="sub_gt_pose_topic" type="string" value=""/>
++
++            <param name="multiuav/degeneration_thresh" type="int" value="1"/>
++
++            <param name="mapping/init_pos_x" type="double" value="0.0"/>
++            <param name="mapping/init_pos_y" type="double" value="1.5"/>
++            <param name="mapping/init_pos_z" type="double" value="0.0"/>
++
++            <remap from="/cloud_registered" to="/cloud_registered_3"/>
++            <remap from="/lidar_slam/odom"  to="/lidar_slam/odom_3"/>
++            <remap from="cloud_registered"  to="/cloud_registered_3"/>
++            <remap from="odom"              to="/lidar_slam/odom_3"/>
++        </node>
++    </group>
++    -->
++
++
++    <node launch-prefix="nice" pkg="rviz" type="rviz" name="rviz_mid360" args="-d $(find swarm_lio)/rviz_cfg/mid360.rviz" />
++</launch>
+diff --git a/swarm_lio/msg/ConnectedTeammateList.msg b/swarm_lio/msg/ConnectedTeammateList.msg
+new file mode 100644
+index 0000000..ff204fb
+--- /dev/null
++++ b/swarm_lio/msg/ConnectedTeammateList.msg
+@@ -0,0 +1,7 @@
++# ConnectedTeammateList.msg
++Header header
++uint8 drone_id                        # My drone id
++uint8[] connected_teammate_id                  # Id of the connected teammates
++
++
++
+diff --git a/swarm_lio/msg/GlobalExtrinsic.msg b/swarm_lio/msg/GlobalExtrinsic.msg
+new file mode 100644
+index 0000000..9153c4b
+--- /dev/null
++++ b/swarm_lio/msg/GlobalExtrinsic.msg
+@@ -0,0 +1,5 @@
++# GlobalExtrinsic.msg
++uint8 teammate_id # The drone_id of teammates
++float32[3] rot_deg
++float32[3] trans
++float32[3] world_to_gravity_deg
+\ No newline at end of file
+diff --git a/swarm_lio/msg/GlobalExtrinsicStatus.msg b/swarm_lio/msg/GlobalExtrinsicStatus.msg
+new file mode 100644
+index 0000000..3561154
+--- /dev/null
++++ b/swarm_lio/msg/GlobalExtrinsicStatus.msg
+@@ -0,0 +1,4 @@
++Header header
++uint8 drone_id
++float32[3] world_to_gravity_deg
++GlobalExtrinsic[] extrinsic    # global extrinsic with other drones
+\ No newline at end of file
+diff --git a/swarm_lio/msg/ObserveTeammate.msg b/swarm_lio/msg/ObserveTeammate.msg
+new file mode 100644
+index 0000000..8905fd9
+--- /dev/null
++++ b/swarm_lio/msg/ObserveTeammate.msg
+@@ -0,0 +1,4 @@
++# ObserveTeammate.msg
++bool is_observe # Observe teammate?
++uint8 teammate_id # The drone_id of observed teammate
++float64[3] observed_pos  # The position of the observed teammate in my body frame
+diff --git a/swarm_lio/msg/QuadStatePub.msg b/swarm_lio/msg/QuadStatePub.msg
+new file mode 100644
+index 0000000..42843d0
+--- /dev/null
++++ b/swarm_lio/msg/QuadStatePub.msg
+@@ -0,0 +1,16 @@
++# QuadStatePub.msg
++
++Header header
++string child_frame_id
++uint8 drone_id                        # My drone id
++geometry_msgs/PoseStamped pose        # My pose in my world frame
++float32[12] pose_cov                   # Upper triangular matrix of attitude and position covariance
++float32[3] gyr                        # the unbiased angular velocity (body frame) of the body origin
++float32[3] vel                        # the estimated velocity (global frame) of the body origin
++float32[3] world_to_gravity_deg       # the estimated euler angles from world to gravity frame in degrees
++float64 swarmlio_start_time           # the time when swarm-lio starts
++bool degenerated                      # whether the drone is degenerated
++ObserveTeammate[] teammate            # Teammates' states observed by me
++
++
++
+diff --git a/swarm_lio/msg/SpatialTemporalOffset.msg b/swarm_lio/msg/SpatialTemporalOffset.msg
+new file mode 100644
+index 0000000..439c0cf
+--- /dev/null
++++ b/swarm_lio/msg/SpatialTemporalOffset.msg
+@@ -0,0 +1,6 @@
++# SpatialTemporalOffset.msg
++uint8 teammate_id # The drone_id of teammate
++float32[3] rot_deg # rotation in euler angles (degrees)
++float32[4] rot_quaternion # rotation in quaternion: w x y z
++float32[3] trans # translation (meters)
++float32 time_offset # (seconds)
+\ No newline at end of file
+diff --git a/swarm_lio/msg/SpatialTemporalOffsetStatus.msg b/swarm_lio/msg/SpatialTemporalOffsetStatus.msg
+new file mode 100644
+index 0000000..1771a22
+--- /dev/null
++++ b/swarm_lio/msg/SpatialTemporalOffsetStatus.msg
+@@ -0,0 +1,3 @@
++Header header
++uint8 drone_id
++SpatialTemporalOffset[] st_offset    # Spatial Temporal Offset with other drones
+\ No newline at end of file
+diff --git a/swarm_lio/msg/TeamStatus.msg b/swarm_lio/msg/TeamStatus.msg
+new file mode 100644
+index 0000000..e3e1060
+--- /dev/null
++++ b/swarm_lio/msg/TeamStatus.msg
+@@ -0,0 +1,3 @@
++# Team
++uint8 my_drone_id
++TeammateInfo[] teammate_info
+diff --git a/swarm_lio/msg/TeammateInfo.msg b/swarm_lio/msg/TeammateInfo.msg
+new file mode 100644
+index 0000000..161bfeb
+--- /dev/null
++++ b/swarm_lio/msg/TeammateInfo.msg
+@@ -0,0 +1,5 @@
++# teammate info
++bool is_connect
++uint8 id
++uint8[4] ip
++
+diff --git a/swarm_lio/scripts/px4_bridge.py b/swarm_lio/scripts/px4_bridge.py
+new file mode 100755
+index 0000000..13c559f
+--- /dev/null
++++ b/swarm_lio/scripts/px4_bridge.py
+@@ -0,0 +1,189 @@
++#!/usr/bin/env python3
++# -*- coding: utf-8 -*-
++"""
++PX4 Bridge: RACER PositionCommand <-> PX4 SITL via MAVROS
++针对 RACER 多机协同探索架构优化（集成 2Hz 持续坐标偏移广播与双向映射）
++"""
++
++import rospy
++import threading
++import math
++from geometry_msgs.msg import Point, PoseStamped
++from mavros_msgs.msg import PositionTarget, State
++from mavros_msgs.srv import SetMode, CommandBool
++from nav_msgs.msg import Odometry
++from quadrotor_msgs.msg import PositionCommand
++
++connected = False
++current_state = State()
++latest_cmd = None
++cmd_lock = threading.Lock()
++
++def state_cb(msg):
++    global connected, current_state
++    current_state = msg
++    connected = msg.connected
++
++def cmd_cb(msg):
++    global latest_cmd
++    with cmd_lock:
++        latest_cmd = msg
++
++def main():
++    global connected, latest_cmd
++
++    rospy.init_node("px4_bridge_node", anonymous=True)
++    
++    drone_id = rospy.get_param("~drone_id", 1)
++    ns = rospy.get_param("~mavros_ns", "")
++    init_pos = rospy.get_param("~init_pos", [0.0, 0.0])  # 物理出发偏移 [x_offset, y_offset]
++    
++    # 中继话题设置，彻底防止与 Swarm-LIO 的 /lidar_slam/odom_N 发生总线冲突！
++    odom_out_topic = rospy.get_param("~odom_topic", f"/mavros_relay/odom_{drone_id}")
++
++    rospy.loginfo(f"[Bridge {drone_id}] 启动中，绑定 MAVROS: '{ns}' | 物理全局偏移: {init_pos}")
++
++    # 1. 2Hz 后台定时器，向 RACER 注入物理起飞坐标偏移（彻底解决地图叠加与防撞锁死）
++    init_pub = rospy.Publisher("/pcl_render_node/init", Point, queue_size=10)
++    init_msg = Point(x=float(init_pos[0]), y=float(init_pos[1]), z=float(drone_id))
++    rospy.Timer(rospy.Duration(0.5), lambda e: init_pub.publish(init_msg))
++    rospy.loginfo(f"[Bridge {drone_id}] 后台 2Hz 坐标偏移发射器已启动，持续注入集群网络")
++
++    # 2. 定义发布器
++    setpoint_pub = rospy.Publisher(f"{ns}/mavros/setpoint_raw/local", PositionTarget, queue_size=10)
++    odom_pub = rospy.Publisher(odom_out_topic, Odometry, queue_size=10)
++    gt_pose_pub = rospy.Publisher(f"/mavros_relay/pose_{drone_id}", PoseStamped, queue_size=10)
++
++    # 3. 里程计中继与坐标转译（注意：绝不在此发布动态 TF，避免与 Swarm-LIO 打架）
++    def odom_cb(msg):
++        # 加上全局物理起飞偏移后发布中继里程计
++        msg.pose.pose.position.x += float(init_pos[0])
++        msg.pose.pose.position.y += float(init_pos[1])
++        odom_pub.publish(msg)
++        
++        # 提取转为 PoseStamped
++        pose_msg = PoseStamped()
++        pose_msg.header = msg.header
++        pose_msg.pose = msg.pose.pose
++        gt_pose_pub.publish(pose_msg)
++
++    rospy.Subscriber(f"{ns}/mavros/local_position/odom", Odometry, odom_cb)
++    rospy.Subscriber(f"{ns}/mavros/state", State, state_cb)
++    rospy.Subscriber(f"/planning/pos_cmd_{drone_id}", PositionCommand, cmd_cb)
++
++    # 4. 等待飞控心跳
++    rospy.loginfo(f"[Bridge {drone_id}] 等待飞控连接...")
++    rate = rospy.Rate(20)
++    while not connected and not rospy.is_shutdown():
++        rate.sleep()
++    rospy.loginfo(f"[Bridge {drone_id}] 心跳已接通！")
++
++    HOVER_MASK = (PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY | PositionTarget.IGNORE_VZ |
++                  PositionTarget.IGNORE_AFX | PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ |
++                  PositionTarget.IGNORE_YAW_RATE)
++    # Use position-only tracking. RACER's velocity feed-forward is in its
++    # world frame and becomes inconsistent with the MAVROS raw target after
++    # repeated replans; the PX4 position loop is safer for this SITL bridge.
++    TRAJ_MASK = (PositionTarget.IGNORE_VX | PositionTarget.IGNORE_VY |
++                 PositionTarget.IGNORE_VZ | PositionTarget.IGNORE_AFX |
++                 PositionTarget.IGNORE_AFY | PositionTarget.IGNORE_AFZ |
++                 PositionTarget.IGNORE_YAW_RATE)
++
++    # 5. 预热设定点 (局部坐标悬停于 0,0,1.5)
++    hover_target = PositionTarget()
++    hover_target.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
++    hover_target.type_mask = HOVER_MASK
++    hover_target.position.x = 0.0
++    hover_target.position.y = 0.0
++    # This MAVROS/PX4 SITL adapter exposes the established RACER convention
++    # on the ROS raw-setpoint path: positive z is the commanded altitude.
++    hover_target.position.z = 1.5
++    hover_target.yaw = 0.0
++
++    rospy.loginfo(f"[Bridge {drone_id}] 开始向 PX4 预热悬停设定点...")
++    for _ in range(50):
++        hover_target.header.stamp = rospy.Time.now()
++        setpoint_pub.publish(hover_target)
++        rate.sleep()
++
++    # 6. 切 OFFBOARD 与解锁（修复：切模式期间必须持续发布 setpoint，防止 PX4 心跳超时拒切）
++    set_mode = rospy.ServiceProxy(f"{ns}/mavros/set_mode", SetMode)
++    arm = rospy.ServiceProxy(f"{ns}/mavros/cmd/arming", CommandBool)
++
++    rospy.loginfo(f"[Bridge {drone_id}] 正在请求 OFFBOARD 模式并解锁...")
++    for _ in range(30):
++        hover_target.header.stamp = rospy.Time.now()
++        setpoint_pub.publish(hover_target)
++        try:
++            if current_state.mode != "OFFBOARD":
++                set_mode(custom_mode="OFFBOARD")
++            if not current_state.armed:
++                arm(True)
++        except Exception:
++            pass
++        rate.sleep()
++
++    rospy.loginfo(f"[Bridge {drone_id}] 成功解锁并进入自导悬停！等待 RACER 规划指令...")
++
++    # 7. 主控制循环
++    loop_rate = rospy.Rate(50)
++    arm_fail_count = 0
++
++    while not rospy.is_shutdown():
++        # 安全守卫：掉解锁时自动补解锁与切 OFFBOARD
++        if not current_state.armed or current_state.mode != "OFFBOARD":
++            arm_fail_count += 1
++            if arm_fail_count % 50 == 0:
++                try:
++                    set_mode(custom_mode="OFFBOARD")
++                    arm(True)
++                except Exception:
++                    pass
++        else:
++            arm_fail_count = 0
++
++        target = PositionTarget()
++        target.header.stamp = rospy.Time.now()
++        target.coordinate_frame = PositionTarget.FRAME_LOCAL_NED
++
++        with cmd_lock:
++            cmd = latest_cmd
++
++        if cmd is not None:
++            target.type_mask = TRAJ_MASK
++            # 核心转化：RACER 全局轨迹 -> PX4 局部飞控轨迹（减去物理起飞偏移）
++            target.position.x = cmd.position.x - float(init_pos[0])
++            target.position.y = cmd.position.y - float(init_pos[1])
++            # Keep a conservative floor above the 3-D map ground plane.
++            target.position.z = max(cmd.position.z, 1.5)
++            
++            target.velocity.x = 0.0
++            target.velocity.y = 0.0
++            target.velocity.z = 0.0
++            target.yaw = cmd.yaw
++            target.yaw_rate = cmd.yaw_dot
++            # Keep a low-rate trace of the command actually forwarded to PX4.
++            # This distinguishes a planner that is replanning from a bridge or
++            # flight-mode path that is holding an old setpoint.
++            rospy.loginfo_throttle(
++                2.0,
++                "[Bridge %d] mode=%s armed=%s cmd=(%.3f, %.3f, %.3f) target=(%.3f, %.3f, %.3f)"
++                % (drone_id, current_state.mode, current_state.armed,
++                   cmd.position.x, cmd.position.y, cmd.position.z,
++                   target.position.x, target.position.y, target.position.z))
++        else:
++            target = hover_target
++            target.header.stamp = rospy.Time.now()
++            rospy.loginfo_throttle(
++                2.0,
++                "[Bridge %d] mode=%s armed=%s no planner command; holding hover"
++                % (drone_id, current_state.mode, current_state.armed))
++
++        setpoint_pub.publish(target)
++        loop_rate.sleep()
++
++if __name__ == "__main__":
++    try:
++        main()
++    except rospy.ROSInterruptException:
++        pass
