@@ -3,8 +3,8 @@ status: incomplete_local_baseline
 captured_at: "2026-08-15T17:46:43+08:00"
 
 platform:
-  git_commit: TODO_PLATFORM_GIT_COMMIT
-  note: racer-platform is not currently an initialized Git repository
+  git_commit: 57df5122bceaaf74391ccae7e86e1da11955de9a
+  note: local audit baseline; GitHub remote is not configured yet
 
 host:
   architecture: x86_64
@@ -108,6 +108,51 @@ planner:
     tag: v2.7.1
     dirty: false
   gt_registration: required_for_single_uav_baseline
+
+single_uav_final_path:
+  source_evidence:
+    project_state: /home/houslakers/auto_tune_racer/swarmlio-single/project_state.md
+    handoff_report: /home/houslakers/auto_tune_racer/swarmlio-single/New_report/单机复现与AI交接手册.md
+    final_runner: /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
+  launch_chain:
+    - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
+    - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8c_pure_postplan_gate.sh
+    - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le4_memory_600.sh
+    - /home/houslakers/auto_tune_racer/swarmlio-single/topology_t1s4r_runner.py
+    - /home/houslakers/auto_tune_racer/master.py
+  runtime_roots:
+    px4: /home/houslakers/PX4-Autopilot
+    swarm_workspace: /home/houslakers/swarm_ws
+    racer_workspace: /home/houslakers/racer_ws
+    control_code: /home/houslakers/control_code
+    platform_runner_root: /home/houslakers/auto_tune_racer
+    world: /home/houslakers/auto_tune_racer/racer_example.world
+  ros_launch_entries:
+    px4_gazebo: px4/multi_uav_mavros_sitl.launch
+    swarm_lio: swarm_lio/multi_uav_swarm_lio.launch
+    racer: exploration_manager/swarm_exploration.launch
+    planner_xml: /home/houslakers/racer_ws/src/RACER/swarm_exploration/exploration_manager/launch/single_drone_planner.xml
+    exploration_xml: /home/houslakers/racer_ws/src/RACER/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml
+    bridge: /home/houslakers/control_code/swarm_bridge.launch
+  adapters:
+    pointcloud_translator: /home/houslakers/control_code/swarm_pc_translator.py
+    gt_registration_mapper: /home/houslakers/auto_tune_racer/px4_gazebo_registered_mapper.py
+    scorer: /home/houslakers/auto_tune_racer/scorer.py
+  registration_source: gt
+  required_environment:
+    - /opt/ros/noetic/setup.bash
+    - /home/houslakers/swarm_ws/devel/setup.bash
+    - /home/houslakers/racer_ws/devel/setup.bash
+    - RACER_GT_MAPPER=1
+  final_runner_sha256: 3cf179994adb1b1c957615cc3e88ea4f2d938e7e4ed3f38ec080b3404c7d25a4
+  master_sha256: f51b2a6e3a202bb01bf20233cc13ab32944ffaed7e3c46f0bd9d08bf191eb4ce
+  world_sha256: 53bb8a94af925affc2093d25e601d5a203065b4a1671f004a0e553d033c523fb
+  control_code:
+    translator_sha256: 832840e344212d451c246a468c8906679f68675cac35dcb31b61a4d2b0636cb7
+    bridge_sha256: fcd1662b8102692d9a7572a4767b494e3e151429d56e80c82cc9d4692e921d3b
+  racer_launch_sha256:
+    planner_xml: f4d0f517198673db73cd5855fc4ce799b0b24dae5259c7d6b6875d51ff47e9f1
+    exploration_xml: 609cf7f34de0779307c1e6a76c9dc730594854fa71ce3c7048ff6c055193dda0
 
 dependencies:
   apt_manifest: environment/apt-packages.txt
