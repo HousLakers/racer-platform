@@ -110,12 +110,35 @@ planner:
   gt_registration: required_for_single_uav_baseline
 
 single_uav_final_path:
+  adopted_node_baseline: LE8-E
+  adopted_node_baseline_role: multi-UAV per-vehicle reference baseline
+  adopted_node_baseline_runtime:
+    obstacles_inflation: 0.35
+    progress_guard_enabled: false
+    global_trajectory_guard_enabled: false
+    global_trajectory_reject_unknown: false
+    sdf_resolution: 0.05
+    candidate_clearance_m: 0.40
+    planning_lower_bound_m: 1.15
+    planning_upper_bound_m: 2.70
+    lse_max_actions: 12
+    lse_max_escape_count: 12
+    lse_bridge_cooldown_s: 35
+    lse_cooldown_s: 35
+    lse_urgent_cooldown_s: 15
+    lse_pending_retrigger: true
+    lse_pending_urgent_after_s: 5
+    lse_pending_min_cooldown_s: 15
+    lse_stall_debounce_s: 15
   source_evidence:
     project_state: /home/houslakers/auto_tune_racer/swarmlio-single/project_state.md
     handoff_report: /home/houslakers/auto_tune_racer/swarmlio-single/New_report/单机复现与AI交接手册.md
-    final_runner: /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
+    adopted_baseline_runner: /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8e_primary_8x600.sh
+    evidence_matrix_runner: /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
+    evidence_matrix: 3 arms x 8 reps x 600 s
+    evidence_seed: 20260812
   launch_chain:
-    - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
+    - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8e_primary_8x600.sh
     - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8c_pure_postplan_gate.sh
     - /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le4_memory_600.sh
     - /home/houslakers/auto_tune_racer/swarmlio-single/topology_t1s4r_runner.py
@@ -144,7 +167,8 @@ single_uav_final_path:
     - /home/houslakers/swarm_ws/devel/setup.bash
     - /home/houslakers/racer_ws/devel/setup.bash
     - RACER_GT_MAPPER=1
-  final_runner_sha256: 3cf179994adb1b1c957615cc3e88ea4f2d938e7e4ed3f38ec080b3404c7d25a4
+  adopted_baseline_runner_sha256: 4219924e4b12cba5fb2c80908b4396e52a2e1d22e61b079e94db920810c28260
+  evidence_matrix_runner_sha256: 3cf179994adb1b1c957615cc3e88ea4f2d938e7e4ed3f38ec080b3404c7d25a4
   master_sha256: f51b2a6e3a202bb01bf20233cc13ab32944ffaed7e3c46f0bd9d08bf191eb4ce
   world_sha256: 53bb8a94af925affc2093d25e601d5a203065b4a1671f004a0e553d033c523fb
   control_code:

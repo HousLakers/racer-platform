@@ -12,6 +12,7 @@ check_hash() {
   if [[ "$actual" == "$expected" ]]; then echo "OK sha  $path"; else echo "HASH MISMATCH $path expected=$expected actual=$actual"; fail=1; fi
 }
 
+check_file /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8e_primary_8x600.sh
 check_file /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
 check_file /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8c_pure_postplan_gate.sh
 check_file /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le4_memory_600.sh
@@ -29,6 +30,7 @@ check_file /home/houslakers/auto_tune_racer/racer_example.world
 check_file /home/houslakers/racer_ws/src/RACER/swarm_exploration/exploration_manager/launch/single_drone_planner.xml
 check_file /home/houslakers/racer_ws/src/RACER/swarm_exploration/exploration_manager/launch/single_drone_exploration.xml
 
+check_hash 4219924e4b12cba5fb2c80908b4396e52a2e1d22e61b079e94db920810c28260 /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8e_primary_8x600.sh
 check_hash 3cf179994adb1b1c957615cc3e88ea4f2d938e7e4ed3f38ec080b3404c7d25a4 /home/houslakers/auto_tune_racer/swarmlio-single/run_e2l_le8i_overnight_randomized_3arm_8x600.sh
 check_hash f51b2a6e3a202bb01bf20233cc13ab32944ffaed7e3c46f0bd9d08bf191eb4ce /home/houslakers/auto_tune_racer/master.py
 check_hash 832840e344212d451c246a468c8906679f68675cac35dcb31b61a4d2b0636cb7 /home/houslakers/control_code/swarm_pc_translator.py
