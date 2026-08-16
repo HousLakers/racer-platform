@@ -19,14 +19,17 @@
 2. 初始化并 checkout PX4 Gazebo Classic submodule；在 submodule 根目录应用
    `px4-gazebo-classic.patch`。
 3. 在 Swarm-LIO2 根目录应用 `swarm-lio-source.patch`。
-4. 在 Livox simulation 根目录应用 `livox-simulation.patch`。
-5. 在 RACER 根目录应用 `racer-le8e-source.patch`。
-6. 重新生成源码 manifest 和 patch hash，先做静态检查，再由 sol 审核后构建。
+4. 在 Swarm-LIO2 根目录应用 `livox-driver-no-autodownload.patch`。
+5. 在 Livox simulation 根目录应用 `livox-simulation.patch`。
+6. 在 RACER 根目录应用 `racer-le8e-source.patch`。
+7. 独立导入并构建固定 commit 的 `Livox-SDK`，再配置 `LIVOX_SDK_ROOT`。
+8. 重新生成源码 manifest 和 patch hash，先做静态检查，再由 sol 审核后构建。
 
 ## 纳入内容
 
 - PX4 multi-UAV SITL launch、posix launch、iris contact sensor 和 empty world 改动；
 - Swarm-LIO 当前多机源码、multi-UAV launch、消息定义和 `px4_bridge.py`；
+- Livox ROS driver 的 CMake 防自动下载修复；
 - Livox Mid360 仿真插件、CMake、ODE/point plugin 和 xacro；
 - RACER LE8E 运行所需规划器、探索管理器、前沿、轨迹、单机 launch 和
   `swarm_exploration_multi.launch`。

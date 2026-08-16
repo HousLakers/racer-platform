@@ -65,6 +65,15 @@ perception:
     parent_repository_commit: a5f751a797bb92baa3104cdd384a312d3c8e7744
     parent_worktree_patch_sha256: bd192abe37756410e26bd62cc2def5e9267ef7ac7fb3dde93bcfabd6b393ef09
     standalone_commit: not_applicable
+  livox_sdk:
+    source_path_observed: /home/houslakers/swarm_ws/src/Swarm-LIO2/livox_ros_driver_mars/Livox-SDK
+    repository_observed: https://github.com/Livox-SDK/Livox-SDK.git
+    commit: 9306596a2bf15c1343bc023b497465ed0a32909d
+    branch_observed: master
+    source_layout_role: external_dependency_for_livox_ros_driver_mars
+    build_output: build/sdk_core/liblivox_sdk_static.a
+    cmake_patch_artifact: patches/20260815-le8e-baseline/livox-driver-no-autodownload.patch
+    cmake_patch_sha256: c4c8b3f3f81b483e7d192824665b9e775abb80d6ca585714eed1d91d89714038
   livox_ros_driver2_available_but_not_active:
     source_path_observed: /home/houslakers/livox_ws/src/livox_ros_driver2
     repository_observed: https://github.com/Livox-SDK/livox_ros_driver2.git

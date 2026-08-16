@@ -81,7 +81,8 @@ if [[ "${COMPONENT}" == swarm || "${COMPONENT}" == all ]]; then
   [[ -d "${SOURCE_ROOT}/FAST_LIO" ]] && link_source "${WORK_ROOT}/swarm_ws/src/FAST_LIO" "${SOURCE_ROOT}/FAST_LIO"
   [[ -d "${SOURCE_ROOT}/livox_laser_simulation" ]] && link_source "${WORK_ROOT}/swarm_ws/src/livox_laser_simulation" "${SOURCE_ROOT}/livox_laser_simulation"
   [[ -d "${SOURCE_ROOT}/gazebo_ros_link_attacher" ]] && link_source "${WORK_ROOT}/swarm_ws/src/gazebo_ros_link_attacher" "${SOURCE_ROOT}/gazebo_ros_link_attacher"
-  (cd "${WORK_ROOT}/swarm_ws" && catkin_make -DCMAKE_BUILD_TYPE=Release)
+  (cd "${WORK_ROOT}/swarm_ws" && catkin_make -DCMAKE_BUILD_TYPE=Release \
+    -DLIVOX_SDK_ROOT="${SOURCE_ROOT}/Livox-SDK")
 fi
 
 if [[ "${COMPONENT}" == racer || "${COMPONENT}" == all ]]; then
