@@ -31,3 +31,6 @@ actionable error. Network download must happen only during an explicit source
 import step, never during CMake configuration.
 
 The SDK build directory is generated output and is not committed to GitHub.
+
+The platform's Docker path is CPU-only. Livox SDK compilation and Swarm-LIO native
+compilation do not require an NVIDIA container runtime in this contract.

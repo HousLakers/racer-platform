@@ -226,6 +226,8 @@ dependencies:
     selection_order: RACER_bspline_opt_hardcodes_usr_local_2_7_1
 
 docker:
+  compute_mode: cpu_only
+  gpu_path: intentionally_disabled
   base_image: ros:noetic-ros-base-focal
   base_image_digest: TODO_DOCKER_BASE_DIGEST
   output_image: TODO_DOCKER_IMAGE_TAG

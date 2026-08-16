@@ -18,10 +18,16 @@
 - apt exposes only legacy `docker-compose` `1.25.0-1`, which is not accepted as the
   Compose v2 release contract for this project;
 - NVIDIA container runtime is unavailable.
+- canonical Compose service is CPU-only; no `gpus: all`, NVIDIA environment variables,
+  or GPU profile is shipped in the default configuration.
 
 Therefore no real `docker compose config`, `docker build`, `docker run`, GPU smoke or
 GUI smoke was executed. The Docker configuration is syntactically prepared but not
 runtime-validated.
+
+The project deliberately does not require GPU access. Ubuntu's discrete-GPU-direct
+display mode is a host display choice and does not by itself require GPU containers;
+the CPU-only container path avoids CUDA/NVIDIA runtime coupling.
 
 ## Required administrator action
 
