@@ -79,14 +79,17 @@ PX4_ROOT=/path/to/PX4-Autopilot \
 ./scripts/apply_le8e_patches.sh --check
 ```
 
-确认检查通过后，才允许在隔离源码树中应用：
+确认检查通过后，队友复用已有 PX4/Gazebo 时，在隔离项目源码树中应用：
 
 ```bash
 RACER_PLATFORM_ALLOW_PATCH_APPLY=yes \
-  ./scripts/apply_le8e_patches.sh --apply
+  ./scripts/apply_le8e_patches.sh --apply --skip-px4
 ```
 
-该脚本拒绝 dirty 源码、错误 commit 和缺失 submodule，不会修改队友已有工作区。
+`--skip-px4` 不下载、不覆盖、不应用 PX4 patch；使用前必须先运行
+`verify_infrastructure_compatibility.sh`。缺少 PX4 时检查会输出
+`ACTION_REQUIRED` 并阻断。未使用 `--skip-px4` 时，脚本仍要求固定 PX4 commit、
+Gazebo submodule 和对应 patch。
 
 当前 `build_workspace.sh` 会对未封装 patch、RACER_DEPS 和 PX4 build target fail closed；这不是安装完成入口。不得为了“先跑起来”删除这些门。
 

@@ -62,7 +62,7 @@ PY
 )"
 
 if ! is_git_worktree "${PX4_ROOT}"; then
-  fail "PX4 source is missing or not a Git repository: ${PX4_ROOT}"
+  fail "ACTION_REQUIRED: install PX4-Autopilot before LE8E launch: ${PX4_ROOT}"
 else
   actual_px4="$(git -C "${PX4_ROOT}" rev-parse HEAD)"
   if [[ "${actual_px4}" == "${expected_px4}" ]]; then
