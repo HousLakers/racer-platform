@@ -35,7 +35,7 @@ base commit 的 `git apply --check`。在 sol/维护者完成内容审查、补�
 9. `TODO_DOCKER_BASE_DIGEST`、输出 image tag/digest：将 `ros:noetic-ros-base-focal` 替换为不可变 digest，并在构建后记录 SBOM/镜像 digest。
 10. GPU：`nvidia-smi` 当前不可用；未安装 `nvidia-container-toolkit`/`nvidia-container-runtime`。需由用户确认是否确实需要 CUDA/GPU local sensing，并提供目标 GPU、驱动与 CUDA 兼容矩阵。
 11. Docker 权限：当前用户不属于 `docker` group，无法访问 `/var/run/docker.sock`；Docker Compose 插件也未安装。图形 socket 存在不等于 GUI 已在容器内验证。
-12. vcstool：当前 `vcs` 命令不存在。需批准并锁定其 apt 或 Python 包版本后，`import_sources.sh --apply` 才可使用。
+12. vcstool：APT 已确认并锁定为 `python3-vcstool=0.3.0-1`；在原生路径执行导入前仍需在目标主机安装该锁定版本并运行同步检查。
 13. PX4 的准确 build target、SITL model、Gazebo Classic 启动入口和子模块初始化合同尚未由现有证据确认；`build_workspace.sh` 因而拒绝猜测 PX4 build 命令。
 14. 用户指定的 `/home/houslakers/auto_tune_racer/New_report/单机复现与AI交接手册.md` 不存在。本次只把交接包 `D_evidence/` 中的同名副本作为补充证据；需确认权威路径/版本。
 15. 本机同时存在 `/usr/local` NLopt 2.7.1 和 ROS overlay 的 `nlopt.pc` 2.1.21；RACER `bspline_opt/CMakeLists.txt` 已确认硬编码 `/usr/local/include` 与 `/usr/local/lib/libnlopt.so`，但仍需记录 NLopt 2.7.1 的构建选项。GTSAM `/usr/local` 为 4.2.0，对应 clean source tag 4.2/commit 已记录，但构建选项尚未记录。

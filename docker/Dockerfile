@@ -23,7 +23,7 @@ RUN python3 -m pip install --no-cache-dir pip==25.0.1 \
     && python3 -m pip install --no-cache-dir \
       --requirement /opt/racer-platform/environment/python-requirements.txt
 
-COPY platform.lock.yaml repos.repos ENVIRONMENT_SYNC.md /opt/racer-platform/
+COPY platform.lock.yaml repos.repos repos.le8e.repos ENVIRONMENT_SYNC.md /opt/racer-platform/
 COPY scripts/ /opt/racer-platform/scripts/
 
 ENV ROS_DISTRO=noetic \

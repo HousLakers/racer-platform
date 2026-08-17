@@ -9,6 +9,7 @@ RACER/Swarm-LIO 的公共环境定义，供 `swarmlio-single` 与 `swarmlio_mult
 - [ENVIRONMENT_SYNC.md](ENVIRONMENT_SYNC.md)：版本选择、原生/Docker 路径和 single/multi 同步合同；
 - [platform.lock.yaml](platform.lock.yaml)：当前实机身份与缺口；
 - [repos.repos](repos.repos)：已确认的上游 Git commit；
+- [repos.le8e.repos](repos.le8e.repos)：LE8E 必需源码清单，不导入队友已有的 PX4/Gazebo 基础环境；
 - [environment/OPEN_ITEMS.md](environment/OPEN_ITEMS.md)：阻止发布可重建基线的开放项；
 - [environment/PLATFORM_MANIFEST.template.yaml](environment/PLATFORM_MANIFEST.template.yaml)：每次构建/实验应保存的环境 manifest。
 

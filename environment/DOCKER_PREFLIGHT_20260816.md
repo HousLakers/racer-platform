@@ -29,7 +29,7 @@ the CPU-only container path avoids CUDA/NVIDIA runtime coupling.
 
 - Base image: `ros:noetic-ros-base-focal@sha256:72b8bc59035dc0a5b8e07aae28c16caa84192971d72d207c72ed734fb1d5e97d`;
 - Output image: `racer-platform:local-cpu`;
-- Output image ID: `sha256:b2b061ee67c9d88df7fa50e593a395e5c503da4629da4be59b791f66f5c7bd61`;
+- Output image ID: `sha256:6f6bde9a4acf229a6d3f92327e247013f5188ce345865a92183d9e4d10e4cbe2`;
 - Compute path: CPU-only; no NVIDIA runtime required.
 
 ## Remaining administrator action

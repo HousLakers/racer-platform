@@ -30,6 +30,21 @@ cd /home/houslakers/auto_tune_racer/racer-platform
 ./scripts/verify_platform.sh --observed-host
 ```
 
+源码导入有两个显式 profile：
+
+```bash
+# 严格完整环境：导入 repos.repos，包括 PX4
+./scripts/import_sources.sh --check --profile full
+
+# 队友已有 PX4/Gazebo 时：只导入 LE8E 项目源码
+./scripts/import_sources.sh --check --profile le8e
+```
+
+`le8e` profile 只处理 `repos.le8e.repos` 中的 RACER、Swarm-LIO2、FAST_LIO、
+Livox 仿真/SDK 和 link-attacher。它不会判断 PX4/Gazebo 是否“可能兼容”，也不会
+覆盖队友已有的基础环境；基础环境必须由单独的兼容性检查和 LE8E 启动链路验证确认。
+已有 LE8E 源码若 commit 不匹配、目录不是 Git 仓库或工作区 dirty，导入会停止。
+
 关闭所有 TODO 并获得人工批准后，新的机器才可按顺序执行：
 
 ```bash
@@ -38,6 +53,13 @@ RACER_PLATFORM_ALLOW_DOWNLOAD=yes ./scripts/import_sources.sh --apply --with-sub
 ./scripts/build_workspace.sh --apply --component swarm
 ./scripts/build_workspace.sh --apply --component racer
 ./scripts/verify_platform.sh
+```
+
+队友复用已有基础环境时，使用 LE8E profile：
+
+```bash
+RACER_PLATFORM_ALLOW_DOWNLOAD=yes \
+  ./scripts/import_sources.sh --apply --profile le8e --with-submodules
 ```
 
 当前 `build_workspace.sh` 会对未封装 patch、RACER_DEPS 和 PX4 build target fail closed；这不是安装完成入口。不得为了“先跑起来”删除这些门。
