@@ -3,7 +3,7 @@
 repositories:
   PX4-Autopilot:
     type: git
-    url: https://gitclone.com/github.com/PX4/PX4-Autopilot.git
+    url: https://github.com/PX4/PX4-Autopilot.git
     version: 13e74de617e97e748d60af11a66b23b7f02e4551
   RACER:
     type: git
