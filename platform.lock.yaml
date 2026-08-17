@@ -1,10 +1,10 @@
 schema: racer-platform/v1
-status: incomplete_local_baseline
-captured_at: "2026-08-15T17:46:43+08:00"
+status: host_runtime_smoke_verified_incomplete_rebuild_baseline
+captured_at: "2026-08-18T02:52:03+08:00"
 
 platform:
   git_commit: 57df5122bceaaf74391ccae7e86e1da11955de9a
-  note: local audit baseline; GitHub remote is not configured yet
+  note: historical lock identity; current repository commit is recorded by Git history
 
 host:
   architecture: x86_64
@@ -228,6 +228,16 @@ dependencies:
 docker:
   compute_mode: cpu_only
   gpu_path: intentionally_disabled
+
+verification:
+  host_runtime_smoke:
+    status: passed
+    evidence: environment/RUNTIME_SMOKE_20260818.md
+    command: python3 master.py --iterations 1 --duration 30
+    runtime_root: /home/houslakers/auto_tune_racer
+    parameter_baseline: LE8-E
+    complete_600s_matrix: not_run
+    clean_machine_px4_gazebo_rebuild: not_run
   base_image: ros:noetic-ros-base-focal
   base_image_digest: sha256:72b8bc59035dc0a5b8e07aae28c16caa84192971d72d207c72ed734fb1d5e97d
   output_image: racer-platform:local-cpu

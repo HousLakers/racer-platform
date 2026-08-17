@@ -1,8 +1,8 @@
 # LE8E 仿真运行手册
 
 本仓库保存公共环境、固定源码清单和 patch；PX4、Gazebo、地图、控制桥接、总控和评分器仍由宿主机项目提供。
-当前已验证：Docker CPU 环境、LE8E 源码导入、Livox SDK 编译、Swarm-LIO 编译、RACER 25 个 ROS 包编译，以及关键 launch 图解析。
-当前尚未由本仓库独立完成：在干净机器上启动 PX4 SITL + Gazebo 并持续完成一次完整实验。因此首次运行应先做短时冒烟，再做 600 秒实验。
+当前已验证：Docker CPU 环境、LE8E 源码导入、Livox SDK 编译、Swarm-LIO 编译、RACER 25 个 ROS 包编译、关键 launch 图解析，以及宿主机上的 30 秒 PX4 SITL + Gazebo + LE8E 完整链路冒烟。
+尚未由本仓库独立完成：在干净机器上重建 PX4/Gazebo 并完成完整 600 秒矩阵。因此新机器仍应先做短时冒烟，再做 600 秒实验。
 
 ## 一、队友已有 PX4/Gazebo 的原生路径
 
@@ -135,4 +135,3 @@ docker compose -f docker/compose.yaml run --rm racer-platform bash
 - LE8E patch：`scripts/apply_le8e_patches.sh --check --skip-px4`
 - 单机冻结路径：`environment/FINAL_SINGLE_UAV_PATH.md`
 - 尚未封装的开放项：`environment/OPEN_ITEMS.md`
-
