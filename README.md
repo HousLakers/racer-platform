@@ -2,11 +2,12 @@
 
 RACER/Swarm-LIO 的公共环境定义，供 `swarmlio-single` 与 `swarmlio_multi` 引用同一个 platform commit 或容器 digest。
 
-当前状态是 `incomplete_local_baseline`：主机、ROS/Gazebo、上游源码 commit、CPU-only Docker 构建和主要依赖已有实机证据，但 PX4、Swarm-LIO、Livox 仿真插件和 RACER 都存在尚未封装的本地改动；apt snapshot、Python artifact hashes、LKH 来源、源码 patch 发布和完整 GitHub 协作闭环仍未完成。因此现在不能声称环境已完全可重建。
+当前状态是“源码重建与编译已验证、完整 PX4-Gazebo 运行链仍需宿主机联调”：CPU-only Docker、LE8E 专用源码导入、submodule、Livox SDK、Swarm-LIO 和 RACER 编译均已有本地证据；完整 PX4 SITL + Gazebo + 传感器 + 总控实验尚未由本仓库独立完成。
 
 入口：
 
 - [ENVIRONMENT_SYNC.md](ENVIRONMENT_SYNC.md)：版本选择、原生/Docker 路径和 single/multi 同步合同；
+- [RUN_LE8E.md](RUN_LE8E.md)：从队友已有 PX4/Gazebo 到 LE8E 仿真启动的实际操作手册；
 - [platform.lock.yaml](platform.lock.yaml)：当前实机身份与缺口；
 - [repos.repos](repos.repos)：已确认的上游 Git commit；
 - [repos.le8e.repos](repos.le8e.repos)：LE8E 必需源码清单，不导入队友已有的 PX4/Gazebo 基础环境；
