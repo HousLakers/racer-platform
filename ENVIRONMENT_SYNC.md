@@ -62,6 +62,17 @@ RACER_PLATFORM_ALLOW_DOWNLOAD=yes \
   ./scripts/import_sources.sh --apply --profile le8e --with-submodules
 ```
 
+已有 PX4/Gazebo 不会被自动覆盖。先运行只读兼容性检查：
+
+```bash
+PX4_ROOT=/path/to/PX4-Autopilot \
+  ./scripts/verify_infrastructure_compatibility.sh --check-patches
+```
+
+默认模式将版本差异和已存在的本地修改报告为 `WARN`，允许后续人工进行兼容性
+验证；`--strict` 才会将这些差异作为阻断。`--check-patches` 只运行
+`git apply --check` 或反向检查，不会实际修改源码。
+
 当前 `build_workspace.sh` 会对未封装 patch、RACER_DEPS 和 PX4 build target fail closed；这不是安装完成入口。不得为了“先跑起来”删除这些门。
 
 推荐的可重建目录由环境变量控制：
