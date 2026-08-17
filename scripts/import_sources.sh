@@ -137,10 +137,19 @@ mkdir -p "${SOURCE_ROOT}"
 vcs import --skip-existing "${SOURCE_ROOT}" < "${LOCK}"
 
 if ${WITH_SUBMODULES}; then
-  for repo in PX4-Autopilot RACER Swarm-LIO2; do
-    [[ -d "${SOURCE_ROOT}/${repo}/.git" ]] || continue
-    git -C "${SOURCE_ROOT}/${repo}" submodule update --init --recursive
-  done
+  while IFS=$'\t' read -r repo _; do
+    [[ -n "${repo}" ]] || continue
+    path="${SOURCE_ROOT}/${repo}"
+    [[ -f "${path}/.gitmodules" ]] || continue
+    git -C "${path}" submodule update --init --recursive
+  done < <(awk '
+    /^[[:space:]]{2}[^[:space:]#][^:]*:[[:space:]]*$/ {
+      repo=$0
+      sub(/^[[:space:]]+/, "", repo)
+      sub(/:[[:space:]]*$/, "", repo)
+      print repo "\tmanifest"
+    }
+  ' "${LOCK}")
 fi
 
 vcs status "${SOURCE_ROOT}"
