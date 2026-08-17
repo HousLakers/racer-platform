@@ -229,10 +229,10 @@ docker:
   compute_mode: cpu_only
   gpu_path: intentionally_disabled
   base_image: ros:noetic-ros-base-focal
-  base_image_digest: TODO_DOCKER_BASE_DIGEST
-  output_image: TODO_DOCKER_IMAGE_TAG
-  output_digest: TODO_DOCKER_IMAGE_DIGEST
+  base_image_digest: sha256:72b8bc59035dc0a5b8e07aae28c16caa84192971d72d207c72ed734fb1d5e97d
+  output_image: racer-platform:local-cpu
+  output_digest: sha256:b2b061ee67c9d88df7fa50e593a395e5c503da4629da4be59b791f66f5c7bd61
   host_client_version: 26.1.3
-  compose_available: false
-  daemon_accessible_to_user: false
+  compose_available: true
+  daemon_accessible_to_user: true
   nvidia_container_runtime_available: false

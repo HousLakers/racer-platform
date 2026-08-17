@@ -16,7 +16,10 @@ RUN sed -E '/^[[:space:]]*(#|$)/d' /opt/racer-platform/environment/apt-packages.
     && xargs -r apt-get install -y --no-install-recommends < /tmp/racer-apt-packages.txt \
     && rm -rf /var/lib/apt/lists/* /tmp/racer-apt-packages.txt
 
+# Ubuntu focal supplies PyYAML through distutils; seed the locked wheel
+# without asking pip to uninstall the distutils-owned files.
 RUN python3 -m pip install --no-cache-dir pip==25.0.1 \
+    && python3 -m pip install --no-cache-dir --ignore-installed PyYAML==6.0.3 \
     && python3 -m pip install --no-cache-dir \
       --requirement /opt/racer-platform/environment/python-requirements.txt
 

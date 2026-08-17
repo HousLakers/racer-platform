@@ -4,7 +4,7 @@
 
 环境版本的唯一身份应是 `racer-platform` 的 Git commit。队友先 checkout 明确 commit，再读取同一 commit 下的 `platform.lock.yaml`、`repos.repos` 和依赖清单。不要用 branch 名、`latest` tag 或“我本机当前目录”作为实验身份。
 
-当前目录尚未成为有效 Git 仓库，所以暂时只能审计，不能发布环境版本。首个基线 commit 前必须关闭 `environment/OPEN_ITEMS.md` 中的关键源码 patch、apt/Python artifact 和 Docker digest 项。
+当前目录已是有效 Git 仓库；推送 GitHub 后，环境版本以明确的 platform commit 发布。首个“完整可重建”基线仍需关闭 `environment/OPEN_ITEMS.md` 中的关键源码 patch、apt/Python artifact 和外部资产项。
 
 每个 single/multi run manifest 至少记录：
 
@@ -60,11 +60,11 @@ export RACER_PLATFORM_BASE_IMAGE='ros:noetic-ros-base-focal@sha256:<approved>'
 export RACER_PLATFORM_IMAGE='registry.example/racer-platform:<platform-commit>'
 ```
 
-未来经用户批准后可执行（本准备阶段禁止执行）：
+当前已验证的 CPU-only 路径：
 
 ```bash
 docker compose -f docker/compose.yaml build racer-platform
-docker image inspect "$RACER_PLATFORM_IMAGE" --format '{{index .RepoDigests 0}}'
+docker image inspect "$RACER_PLATFORM_IMAGE" --format '{{.Id}}'
 docker compose -f docker/compose.yaml run --rm racer-platform
 ```
 
@@ -97,7 +97,7 @@ Compose 使用 host network 和 X11 socket，面向 Linux 仿真主机。显示�
 2. platform commit 和 lock hash 一致；
 3. 每个源码 repo commit、submodule 和 patch hash 一致；
 4. apt/Python 验证一致；
-5. Docker 模式还需 image digest 一致；
+5. Docker 模式还需 base image digest 和构建输出 image ID 一致；
 6. host-only 要求（GPU/显示/网络/设备）单独通过 preflight。
 
 ## 6. GitHub、镜像与外部存储边界
@@ -109,4 +109,3 @@ Docker 镜像放：系统/ROS/编译依赖、固定 Python artifacts、经批准
 外部存储放：地图/PCD、bag、完整日志、点云、runroot、大型二进制/模型、受许可约束的归档和私有资产。GitHub 只保存内容 hash、大小、许可、获取位置和访问策略。
 
 永不提交：`build/`、`devel/`、`install/`、`.ros/`、Gazebo cache、完整日志、点云、密钥、Docker credential 和未脱敏主机配置。
-
