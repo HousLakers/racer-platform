@@ -73,6 +73,21 @@ PX4_ROOT=/path/to/PX4-Autopilot \
 验证；`--strict` 才会将这些差异作为阻断。`--check-patches` 只运行
 `git apply --check` 或反向检查，不会实际修改源码。
 
+在全新、固定 commit 的源码树上检查 LE8E patch：
+
+```bash
+./scripts/apply_le8e_patches.sh --check
+```
+
+确认检查通过后，才允许在隔离源码树中应用：
+
+```bash
+RACER_PLATFORM_ALLOW_PATCH_APPLY=yes \
+  ./scripts/apply_le8e_patches.sh --apply
+```
+
+该脚本拒绝 dirty 源码、错误 commit 和缺失 submodule，不会修改队友已有工作区。
+
 当前 `build_workspace.sh` 会对未封装 patch、RACER_DEPS 和 PX4 build target fail closed；这不是安装完成入口。不得为了“先跑起来”删除这些门。
 
 推荐的可重建目录由环境变量控制：
